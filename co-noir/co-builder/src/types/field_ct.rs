@@ -3856,7 +3856,7 @@ impl<F: PrimeField> CycleScalarCT<F> {
     const NUM_BITS: usize = F::MODULUS_BIT_SIZE as usize;
     const SKIP_PRIMALITY_TEST: bool = false;
     const USE_BN254_SCALAR_FIELD_FOR_PRIMALITY_TEST: bool = false;
-    pub(crate) const MAX_BITS_PER_ENDOMORPHISM_SCALAR: usize = 128;
+    pub(crate) const MAX_BITS_PER_ENDOMORPHISM_SCALAR: usize = 127;
     pub(crate) const LO_BITS: usize = Self::MAX_BITS_PER_ENDOMORPHISM_SCALAR;
     pub(crate) const HI_BITS: usize = Self::NUM_BITS - Self::LO_BITS;
 
@@ -3911,20 +3911,9 @@ impl<F: PrimeField> CycleScalarCT<F> {
     }
 
     fn slice(inp: BigUint) -> (BigUint, BigUint) {
-        // Hardcoded for these value
-        debug_assert_eq!(Self::LO_BITS, 128);
-        debug_assert!(Self::HI_BITS < 128);
-        let digits = inp.to_u64_digits();
-        let mut lo = BigUint::zero();
-        let mut hi = BigUint::zero();
-        for digit in digits.iter().take(2).rev() {
-            lo <<= 64;
-            lo += *digit;
-        }
-        for digit in digits.iter().skip(2).take(2).rev() {
-            hi <<= 64;
-            hi += *digit;
-        }
+        let lo_mask = (BigUint::one() << Self::LO_BITS) - BigUint::one();
+        let lo = &inp & &lo_mask;
+        let hi = &inp >> Self::LO_BITS;
         debug_assert!(hi.bits() as usize <= Self::HI_BITS);
         (lo, hi)
     }

@@ -77,8 +77,8 @@ impl<F: PrimeField, const T: usize, const R: usize, H: FieldHash<F, T> + Default
     }
 
     fn split_challenge(challenge: Self::DataType) -> [Self::DataType; 2] {
-        // match the parameter used in stdlib, which is derived from cycle_scalar (is 128)
-        const LO_BITS: usize = 128;
+        // Symmetric 127-bit split (BB nightly.20260102+, Aztec 4.2.0)
+        const LO_BITS: usize = 127;
         let biguint: BigUint = challenge.into();
 
         let lower_mask = (BigUint::one() << LO_BITS) - BigUint::one();
