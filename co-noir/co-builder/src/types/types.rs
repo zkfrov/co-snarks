@@ -159,6 +159,7 @@ pub(crate) struct AcirFormatOriginalOpcodeIndices {
     pub(crate) assert_equalities: Vec<usize>,
     pub(crate) poly_triple_constraints: Vec<usize>,
     pub(crate) quad_constraints: Vec<usize>,
+    pub(crate) big_quad_constraints: Vec<usize>,
     // Multiple opcode indices per block:
     pub(crate) block_constraints: Vec<Vec<usize>>,
 }
@@ -881,6 +882,7 @@ impl<'a, P: CurveGroup> TraceData<'a, P> {
             // otherwise, the next block starts immediately following the previous one
             offset += block.get_fixed_size(is_structured) as usize;
         }
+
     }
 }
 

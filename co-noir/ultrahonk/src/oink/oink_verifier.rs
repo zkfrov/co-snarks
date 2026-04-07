@@ -85,14 +85,10 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
     ) -> HonkVerifyResult<()> {
         tracing::trace!("executing (verifying) sorted list accumulator round");
 
-        let challs = transcript.get_challenges::<C>(&[
-            "eta".to_string(),
-            "eta_two".to_string(),
-            "eta_three".to_string(),
-        ]);
-        self.memory.challenges.eta_1 = challs[0];
-        self.memory.challenges.eta_2 = challs[1];
-        self.memory.challenges.eta_3 = challs[2];
+        let eta = transcript.get_challenge::<C>("eta".to_string());
+        self.memory.challenges.eta_1 = eta;
+        self.memory.challenges.eta_2 = eta * eta;
+        self.memory.challenges.eta_3 = eta * eta * eta;
 
         *self.memory.witness_commitments.lookup_read_counts_mut() =
             transcript.receive_point_from_prover::<C>("lookup_read_counts".to_string())?;
@@ -114,6 +110,8 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
 
         let challs = transcript.get_challenges::<C>(&["beta".to_string(), "gamma".to_string()]);
         self.memory.challenges.beta = challs[0];
+        self.memory.challenges.beta_sqr = challs[0] * challs[0];
+        self.memory.challenges.beta_cube = challs[0] * challs[0] * challs[0];
         self.memory.challenges.gamma = challs[1];
 
         *self.memory.witness_commitments.lookup_inverses_mut() =

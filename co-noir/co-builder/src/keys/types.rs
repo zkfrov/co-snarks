@@ -132,5 +132,6 @@ impl<'a, T: NoirUltraHonkProver<P>, P: CurveGroup> TraceData<'a, T, P> {
             // otherwise, the next block starts immediately following the previous one
             offset += block.get_fixed_size(is_structured) as usize;
         }
+
     }
 }

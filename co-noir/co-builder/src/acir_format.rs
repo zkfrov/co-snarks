@@ -220,88 +220,169 @@ impl<F: PrimeField> AcirFormat<F> {
         af: &mut AcirFormat<F>,
         opcode_index: usize,
     ) {
-        // If the expression fits in a polytriple, we use it.
-        let might_fit_in_polytriple =
-            arg.linear_combinations.len() <= 3 && arg.mul_terms.len() <= 1;
-        let mut needs_to_be_parsed_as_mul_quad = !might_fit_in_polytriple;
-        if might_fit_in_polytriple {
-            let mut pt = Self::serialize_arithmetic_gate(&arg);
-
-            let (w1, w2) = Self::is_assert_equal(&arg, &pt, af);
-
-            if !w1.is_zero() {
-                if w1 != w2 {
-                    if !af.constrained_witness.contains(&pt.a) {
-                        // we mark it as constrained because it is going to be asserted to be equal to a constrained one.
-                        af.constrained_witness.insert(pt.a);
-                        // swap the witnesses so that the first one is always properly constrained.
-                        std::mem::swap(&mut pt.a, &mut pt.b);
-                    }
-                    if !af.constrained_witness.contains(&pt.b) {
-                        // we mark it as constrained because it is going to be asserted to be equal to a constrained one.
-                        af.constrained_witness.insert(pt.b);
-                    }
-                    // minimal_range of a witness is the smallest range of the witness and the witness that are
-                    // 'assert_equal' to it
-                    if af.minimal_range.contains_key(&pt.b) && af.minimal_range.contains_key(&pt.a)
-                    {
-                        if af.minimal_range[&pt.a] < af.minimal_range[&pt.b] {
-                            af.minimal_range.insert(pt.a, af.minimal_range[&pt.b]);
-                        } else {
-                            af.minimal_range.insert(pt.b, af.minimal_range[&pt.a]);
-                        }
-                    } else if af.minimal_range.contains_key(&pt.b) {
-                        af.minimal_range.insert(pt.a, af.minimal_range[&pt.b]);
-                    } else if af.minimal_range.contains_key(&pt.a) {
-                        af.minimal_range.insert(pt.b, af.minimal_range[&pt.a]);
-                    }
-
-                    af.assert_equalities.push(pt);
-                    af.original_opcode_indices
-                        .assert_equalities
-                        .push(opcode_index);
-                }
-                return;
-            }
-            // Even if the number of linear terms is less than 3, we might not be able to fit it into a width-3 arithmetic
-            // gate. This is the case if the linear terms are all disctinct witness from the multiplication term. In that
-            // case, the serialize_arithmetic_gate() function will return a poly_triple with all 0's, and we use a width-4
-            // gate instead. We could probably always use a width-4 gate in fact.
-            if pt == PolyTriple::default() {
-                needs_to_be_parsed_as_mul_quad = true;
-            } else {
-                af.poly_triple_constraints.push(pt);
-                af.original_opcode_indices
-                    .poly_triple_constraints
-                    .push(opcode_index);
-            }
+        // bb 4.2.0: all AssertZero expressions go through split_into_mul_quad_gates
+        let mut linear_terms: std::collections::BTreeMap<u32, F> = std::collections::BTreeMap::new();
+        for linear_term in arg.linear_combinations.iter() {
+            let selector_value: F = linear_term.0.into_repr();
+            let witness_idx = linear_term.1 .0;
+            *linear_terms.entry(witness_idx).or_insert(F::zero()) += selector_value;
         }
-        if needs_to_be_parsed_as_mul_quad {
-            let mut mul_quads = Vec::new();
-            // We try to use a single mul_quad gate to represent the expression.
-            if arg.mul_terms.len() <= 1 {
-                let quad = Self::serialize_mul_quad_gate(&arg);
 
-                // add it to the result vector if it worked
-                if !quad.a.is_zero() || !quad.mul_scaling.is_zero() || !quad.a_scaling.is_zero() {
-                    mul_quads.push(quad);
-                }
-            }
-            if mul_quads.is_empty() {
-                // If not, we need to split the expression into multiple gates
-                mul_quads = Self::split_into_mul_quad_gates(&arg);
-            }
-            if mul_quads.len() == 1 {
-                af.quad_constraints.push(mul_quads[0].clone());
-                af.original_opcode_indices
-                    .quad_constraints
-                    .push(opcode_index);
-            }
-            if mul_quads.len() > 1 {
-                af.big_quad_constraints.push(mul_quads);
-            }
+        let is_single = Self::is_single_arithmetic_gate(&arg, &linear_terms);
+        let mul_quads = Self::split_into_mul_quad_gates_new(&arg, &mut linear_terms);
+
+        assert!(!mul_quads.is_empty(), "assert_zero produced zero gates");
+
+        if is_single {
+            assert_eq!(mul_quads.len(), 1);
+            af.quad_constraints.push(mul_quads[0].clone());
+            af.original_opcode_indices
+                .quad_constraints
+                .push(opcode_index);
+        } else {
+            assert!(mul_quads.len() > 1);
+            af.big_quad_constraints.push(mul_quads);
+            af.original_opcode_indices
+                .big_quad_constraints
+                .push(opcode_index);
         }
+
         Self::constrain_witnesses(arg, af);
+    }
+
+    /// Check if the expression fits into a single width-4 arithmetic gate
+    fn is_single_arithmetic_gate(
+        arg: &Expression<GenericFieldElement<F>>,
+        linear_terms: &std::collections::BTreeMap<u32, F>,
+    ) -> bool {
+        const NUM_WIRES: usize = 4;
+
+        if linear_terms.len() > NUM_WIRES {
+            return false;
+        }
+        if arg.mul_terms.len() > 1 {
+            return false;
+        }
+        if arg.mul_terms.len() == 1 {
+            let mut num_witnesses = 2 + linear_terms.len();
+            let lhs = arg.mul_terms[0].1 .0;
+            let rhs = arg.mul_terms[0].2 .0;
+            let lhs_in_linear = linear_terms.contains_key(&lhs);
+            let rhs_in_linear = linear_terms.contains_key(&rhs);
+
+            if lhs != rhs {
+                if lhs_in_linear { num_witnesses -= 1; }
+                if rhs_in_linear { num_witnesses -= 1; }
+            } else if lhs_in_linear {
+                num_witnesses -= 1;
+            }
+            return num_witnesses <= NUM_WIRES;
+        }
+        linear_terms.len() <= NUM_WIRES
+    }
+
+    /// Convert an ACIR expression into one or more mul_quad gates (bb 4.2.0 algorithm)
+    fn split_into_mul_quad_gates_new(
+        arg: &Expression<GenericFieldElement<F>>,
+        linear_terms: &mut std::collections::BTreeMap<u32, F>,
+    ) -> Vec<MulQuad<F>> {
+        const IS_CONSTANT: u32 = u32::MAX;
+
+        let mut result = Vec::new();
+
+        // Step 1: Add multiplication terms and merge linear terms with same witness
+        for mul_term in arg.mul_terms.iter() {
+            let mut quad = MulQuad {
+                a: mul_term.1 .0,
+                b: mul_term.2 .0,
+                c: IS_CONSTANT,
+                d: IS_CONSTANT,
+                mul_scaling: mul_term.0.into_repr(),
+                a_scaling: F::zero(),
+                b_scaling: F::zero(),
+                c_scaling: F::zero(),
+                d_scaling: F::zero(),
+                const_scaling: F::zero(),
+            };
+
+            if let Some(coeff) = linear_terms.remove(&quad.a) {
+                quad.a_scaling += coeff;
+            }
+            if let Some(coeff) = linear_terms.remove(&quad.b) {
+                quad.b_scaling += coeff;
+            }
+            result.push(quad);
+        }
+
+        // Step 2: Fill remaining linear terms into existing gates' c,d slots
+        let mut is_first_gate = true;
+        for quad in result.iter_mut() {
+            if !linear_terms.is_empty() && quad.c == IS_CONSTANT {
+                let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                quad.c = idx;
+                quad.c_scaling += coeff;
+                linear_terms.remove(&idx);
+            }
+            if is_first_gate {
+                quad.const_scaling = arg.q_c.into_repr();
+                if !linear_terms.is_empty() && quad.d == IS_CONSTANT {
+                    let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                    quad.d = idx;
+                    quad.d_scaling += coeff;
+                    linear_terms.remove(&idx);
+                }
+                is_first_gate = false;
+            }
+        }
+
+        // Step 3: Create new gates for remaining linear terms
+        while !linear_terms.is_empty() {
+            let mut quad = MulQuad {
+                a: IS_CONSTANT, b: IS_CONSTANT, c: IS_CONSTANT, d: IS_CONSTANT,
+                mul_scaling: F::zero(), a_scaling: F::zero(), b_scaling: F::zero(),
+                c_scaling: F::zero(), d_scaling: F::zero(), const_scaling: F::zero(),
+            };
+
+            if !linear_terms.is_empty() {
+                let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                quad.a = idx; quad.a_scaling += coeff;
+                linear_terms.remove(&idx);
+            }
+            if !linear_terms.is_empty() {
+                let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                quad.b = idx; quad.b_scaling += coeff;
+                linear_terms.remove(&idx);
+            }
+            if !linear_terms.is_empty() {
+                let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                quad.c = idx; quad.c_scaling += coeff;
+                linear_terms.remove(&idx);
+            }
+
+            if is_first_gate {
+                quad.const_scaling = arg.q_c.into_repr();
+                if !linear_terms.is_empty() && quad.d == IS_CONSTANT {
+                    let (&idx, &coeff) = linear_terms.iter().next().unwrap();
+                    quad.d = idx;
+                    quad.d_scaling += coeff;
+                    linear_terms.remove(&idx);
+                }
+                is_first_gate = false;
+            }
+
+            result.push(quad);
+        }
+
+        // If no gates were created (e.g., expression is just a constant), create one
+        if result.is_empty() {
+            result.push(MulQuad {
+                a: IS_CONSTANT, b: IS_CONSTANT, c: IS_CONSTANT, d: IS_CONSTANT,
+                mul_scaling: F::zero(), a_scaling: F::zero(), b_scaling: F::zero(),
+                c_scaling: F::zero(), d_scaling: F::zero(), const_scaling: arg.q_c.into_repr(),
+            });
+        }
+
+        result
     }
 
     /**

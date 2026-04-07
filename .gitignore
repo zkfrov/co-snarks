@@ -14,3 +14,12 @@ co-noir/co-acvm/src/bin/
 co-circom/co-plonk/src/bin/
 groth16_tester.rs
 .DS_Store
+
+# compare.sh working artifacts (generated during cross-verification tests)
+co-noir/co-noir/examples/test_vectors/**/proof
+co-noir/co-noir/examples/test_vectors/**/proof_plaindriver
+co-noir/co-noir/examples/test_vectors/**/public_inputs
+co-noir/co-noir/examples/test_vectors/**/public_inputs_plaindriver
+co-noir/co-noir/examples/test_vectors/**/vk
+co-noir/co-noir/examples/test_vectors/**/vk_plaindriver
+co-noir/co-noir/examples/test_vectors/**/vk_hash

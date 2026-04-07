@@ -887,10 +887,7 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
         for constraint in constraint_system.range_constraints.iter() {
             let val = &self.get_variable(constraint.witness as usize);
 
-            let mut num_bits = constraint.num_bits;
-            if let Some(r) = constraint_system.minimal_range.get(&constraint.witness) {
-                num_bits = *r;
-            }
+            let num_bits = constraint.num_bits;
             if num_bits > Self::DEFAULT_PLOOKUP_RANGE_BITNUM as u32 && T::is_shared(val) {
                 let share_val = T::get_shared(val).expect("Already checked it is shared");
                 if let Some(&idx) = bits_locations.get(&num_bits) {
@@ -1094,44 +1091,16 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
     where
         P::BaseField: PrimeField,
     {
-        // AZTEC TODO(https://github.com/AztecProtocol/barretenberg/issues/911): These are pairing points extracted from a valid
-        // proof. This is a workaround because we can't represent the point at infinity in biggroup yet.
-        let x0_val: BigUint = Utils::field_from_hex_string::<P::BaseField>(
-            "0x031e97a575e9d05a107acb64952ecab75c020998797da7842ab5d6d1986846cf",
-        )
-        .expect("x0 works")
-        .into();
-        let y0_val: BigUint = Utils::field_from_hex_string::<P::BaseField>(
-            "0x178cbf4206471d722669117f9758a4c410db10a01750aebb5666547acf8bd5a4",
-        )
-        .expect("y0 works")
-        .into();
-        let x1_val: BigUint = Utils::field_from_hex_string::<P::BaseField>(
-            "0x0f94656a2ca489889939f81e9c74027fd51009034b3357f0e91b8a11e7842c38",
-        )
-        .expect("x1 works")
-        .into();
-        let y1_val: BigUint = Utils::field_from_hex_string::<P::BaseField>(
-            "0x1b52c2020d7464a0c80c0da527a08193fe27776f50224bd6fb128b46c1ddb67f",
-        )
-        .expect("y1 works")
-        .into();
-
-        // This internally calls functions that assume we are working with public values (i.e. they are only implemented for public values)
-        let mut x0 = BigField::new_from_u256(x0_val);
-        let mut y0 = BigField::new_from_u256(y0_val);
-        let mut x1 = BigField::new_from_u256(x1_val);
-        let mut y1 = BigField::new_from_u256(y1_val);
-
-        x0.convert_constant_to_fixed_witness(self, driver);
-        y0.convert_constant_to_fixed_witness(self, driver);
-        x1.convert_constant_to_fixed_witness(self, driver);
-        y1.convert_constant_to_fixed_witness(self, driver);
-
-        x0.set_public(driver, self);
-        y0.set_public(driver, self);
-        x1.set_public(driver, self);
-        y1.set_public(driver, self);
+        // Default pairing points are at infinity, represented as (0,0) in biggroup.
+        // bb combines 4 BigField limbs into 2 (lo/hi) per coordinate, giving:
+        //   2 points × 2 coordinates × 2 (lo/hi) = 8 public inputs
+        // All zero for the default (infinity) case.
+        const BB_PAIRING_POINTS_PUBLIC_INPUTS: usize = 8;
+        for _ in 0..BB_PAIRING_POINTS_PUBLIC_INPUTS {
+            let idx = self.add_variable(T::public_zero());
+            self.fix_witness(idx, P::ScalarField::zero());
+            self.set_public_input(idx);
+        }
 
         Ok(())
     }
@@ -2767,27 +2736,135 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
             //  *    num_bits <= DEFAULT_PLOOKUP_RANGE_BITNUM is correctly enforced in the circuit.
             //  *    Longer term, as Zac says, we would need to refactor the composer to fix this.
             //  **/
-            self.create_poly_gate(&PolyTriple {
-                a: variable_index,
-                b: variable_index,
-                c: variable_index,
-                q_m: P::ScalarField::zero(),
-                q_l: P::ScalarField::one(),
-                q_r: -P::ScalarField::one(),
-                q_o: P::ScalarField::zero(),
-                q_c: P::ScalarField::zero(),
-            });
+            // Add an unconstrained gate to ensure variable_index appears in a wire.
+            Self::create_unconstrained_gate(
+                &mut self.blocks.arithmetic,
+                variable_index,
+                self.zero_idx,
+                self.zero_idx,
+                self.zero_idx,
+            );
 
             self.create_new_range_constraint(variable_index, (1u64 << num_bits) - 1);
         } else {
-            // The value must be public, otherwise it would have been batch decomposed already
-            self.decompose_into_default_range(
-                driver,
-                variable_index,
-                num_bits as u64,
-                None,
-                Self::DEFAULT_PLOOKUP_RANGE_BITNUM as u64,
-            )?;
+            self.create_limbed_range_constraint(variable_index, num_bits as u64, Self::DEFAULT_PLOOKUP_RANGE_BITNUM as u64)?;
+        }
+        Ok(())
+    }
+
+    /// Decompose a variable into sublimbs, range-constrain each, and prove reconstruction.
+    /// This matches bb 4.2.0's create_limbed_range_constraint.
+    fn create_limbed_range_constraint(
+        &mut self,
+        variable_index: u32,
+        num_bits: u64,
+        target_range_bitnum: u64,
+    ) -> eyre::Result<()> {
+        self.assert_valid_variables(&[variable_index]);
+
+        let val: num_bigint::BigUint = T::get_public(&self.get_variable(variable_index as usize))
+            .ok_or(eyre::eyre!("Range constraint on non-public value in plain mode"))?
+            .into();
+
+        let sublimb_mask: u64 = (1u64 << target_range_bitnum) - 1;
+        let has_remainder = num_bits % target_range_bitnum != 0;
+        let num_limbs = num_bits / target_range_bitnum + if has_remainder { 1 } else { 0 };
+        let last_limb_size = num_bits - (num_bits / target_range_bitnum) * target_range_bitnum;
+        let last_limb_range = if last_limb_size > 0 { (1u64 << last_limb_size) - 1 } else { 0 };
+
+        // Extract sublimbs
+        let mut sublimbs = Vec::new();
+        let mut acc = val.clone();
+        let mask_big = num_bigint::BigUint::from(sublimb_mask);
+        for _ in 0..num_limbs {
+            sublimbs.push((&acc & &mask_big).try_into().unwrap_or(0u64));
+            acc >>= target_range_bitnum;
+        }
+
+        // Create variables and range-constrain each sublimb
+        let mut sublimb_indices = Vec::new();
+        let num_full_limbs = if has_remainder { sublimbs.len() - 1 } else { sublimbs.len() };
+        for i in 0..num_full_limbs {
+            let idx = self.add_variable(T::AcvmType::from(P::ScalarField::from(sublimbs[i])));
+            sublimb_indices.push(idx);
+            self.create_new_range_constraint(idx, sublimb_mask);
+        }
+        if has_remainder {
+            let idx = self.add_variable(T::AcvmType::from(P::ScalarField::from(*sublimbs.last().unwrap())));
+            sublimb_indices.push(idx);
+            self.create_new_range_constraint(idx, last_limb_range);
+        }
+
+        // Prove reconstruction via arithmetic gates, processing limbs in groups of 3
+        let num_limb_triples = (num_limbs / 3) + if num_limbs % 3 != 0 { 1 } else { 0 };
+        let leftovers = if num_limbs % 3 == 0 { 3 } else { num_limbs % 3 };
+
+        let mut accumulator_idx = variable_index;
+        for i in 0..num_limb_triples {
+            let is_last = i == num_limb_triples - 1;
+            let real_limbs = [
+                !(is_last && leftovers < 1),
+                !(is_last && leftovers < 2),
+                !(is_last && leftovers < 3),
+            ];
+
+            let new_limbs = [
+                if real_limbs[0] { sublimb_indices[(3 * i) as usize] } else { self.zero_idx },
+                if real_limbs[1] { sublimb_indices[(3 * i + 1) as usize] } else { self.zero_idx },
+                if real_limbs[2] { sublimb_indices[(3 * i + 2) as usize] } else { self.zero_idx },
+            ];
+
+            let shifts = [
+                target_range_bitnum * 3 * i,
+                target_range_bitnum * (3 * i + 1),
+                target_range_bitnum * (3 * i + 2),
+            ];
+
+            // Compute new accumulator
+            let round_vals: [u64; 3] = [
+                if real_limbs[0] { sublimbs[(3 * i) as usize] } else { 0 },
+                if real_limbs[1] { sublimbs[(3 * i + 1) as usize] } else { 0 },
+                if real_limbs[2] { sublimbs[(3 * i + 2) as usize] } else { 0 },
+            ];
+
+            use num_bigint::BigUint;
+            let contribution = BigUint::from(round_vals[0]) << shifts[0] as usize
+                | BigUint::from(round_vals[1]) << shifts[1] as usize
+                | BigUint::from(round_vals[2]) << shifts[2] as usize;
+            // Subtraction of contribution should work since accumulator >= contribution
+            // But in field arithmetic we just do: new_acc = acc - contribution
+            // Actually let me compute it using the BigUint val
+            // We need accumulator as BigUint, subtract contribution, then create witness
+
+            let shift_val = |s: u64| -> P::ScalarField {
+                let bu = BigUint::from(1u64) << s as usize;
+                P::ScalarField::from(bu)
+            };
+
+            self.create_big_add_gate(
+                &crate::types::types::AddQuad {
+                    a: new_limbs[0],
+                    b: new_limbs[1],
+                    c: new_limbs[2],
+                    d: accumulator_idx,
+                    a_scaling: shift_val(shifts[0]),
+                    b_scaling: shift_val(shifts[1]),
+                    c_scaling: shift_val(shifts[2]),
+                    d_scaling: -P::ScalarField::one(),
+                    const_scaling: P::ScalarField::zero(),
+                },
+                !is_last,
+            );
+
+            if !is_last {
+                let current_acc: P::ScalarField = T::get_public(&self.get_variable(accumulator_idx as usize))
+                    .expect("accumulator must be public");
+                let sub = P::ScalarField::from(BigUint::from(round_vals[0]) << shifts[0] as usize)
+                    + P::ScalarField::from(BigUint::from(round_vals[1]) << shifts[1] as usize)
+                    + P::ScalarField::from(BigUint::from(round_vals[2]) << shifts[2] as usize);
+                let new_acc = current_acc - sub;
+                accumulator_idx = self.add_variable(T::AcvmType::from(new_acc));
+            }
         }
         Ok(())
     }
@@ -3264,8 +3341,9 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
     fn create_range_list(&mut self, target_range: u64) -> RangeList {
         let range_tag = self.get_new_tag();
         let tau_tag = self.get_new_tag();
-        self.create_tag(range_tag, tau_tag);
-        self.create_tag(tau_tag, range_tag);
+        // Use set_tau_transposition (no extra tag increment) matching bb 4.2.0
+        self.tau.insert(range_tag, tau_tag);
+        self.tau.insert(tau_tag, range_tag);
 
         let num_multiples_of_three = target_range / Self::DEFAULT_PLOOKUP_RANGE_STEP_SIZE as u64;
         let mut variable_indices = Vec::with_capacity(num_multiples_of_three as usize + 2);
@@ -4123,7 +4201,7 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
         // Add the const zero variable after the acir witness has been
         // incorporated into variables.
         builder.zero_idx = builder.put_constant_variable(P::ScalarField::zero());
-        builder.tau.insert(Self::DUMMY_TAG, Self::DUMMY_TAG); // AZTEC TODO(luke): explain this
+        builder.tau.insert(Self::DUMMY_TAG, Self::DUMMY_TAG);
 
         builder
     }
@@ -4288,21 +4366,45 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
     ) -> eyre::Result<()> {
         tracing::trace!("Builder build constraints");
 
-        // Add arithmetic gates
+        // Add arithmetic gates (all as width-4 quad gates, matching bb 4.2.0)
+        // Replace IS_CONSTANT (u32::MAX) wire indices with zero_idx
+        let zero_idx = self.zero_idx;
+        let fix_constant = |idx: u32| -> u32 { if idx == u32::MAX { zero_idx } else { idx } };
+
         for constraint in constraint_system.poly_triple_constraints.iter() {
-            self.create_poly_gate(constraint);
+            let quad = crate::types::types::MulQuad {
+                a: fix_constant(constraint.a),
+                b: fix_constant(constraint.b),
+                c: fix_constant(constraint.c),
+                d: zero_idx,
+                mul_scaling: constraint.q_m,
+                a_scaling: constraint.q_l,
+                b_scaling: constraint.q_r,
+                c_scaling: constraint.q_o,
+                d_scaling: P::ScalarField::zero(),
+                const_scaling: constraint.q_c,
+            };
+            self.create_big_mul_gate(&quad);
         }
         for constraint in constraint_system.quad_constraints.iter() {
-            self.create_big_mul_gate(constraint);
+            let mut quad = constraint.clone();
+            // Note: bb 4.2.0 doesn't replace 'a' with zero_idx to get a non-zero gate check
+            quad.b = fix_constant(quad.b);
+            quad.c = fix_constant(quad.c);
+            quad.d = fix_constant(quad.d);
+            self.create_big_mul_gate(&quad);
         }
 
         // Oversize gates are a vector of mul_quad gates.
         for constraint in constraint_system.big_quad_constraints.iter() {
             let mut next_w4_wire_value = T::AcvmType::default();
-            // Define the 4th wire of these mul_quad gates, which is implicitly used by the previous gate.
             let constraint_size = constraint.len();
             for (j, small_constraint) in constraint.iter().enumerate().take(constraint_size - 1) {
                 let mut small_constraint = small_constraint.clone();
+                // Replace IS_CONSTANT with zero_idx
+                small_constraint.b = fix_constant(small_constraint.b);
+                small_constraint.c = fix_constant(small_constraint.c);
+                small_constraint.d = fix_constant(small_constraint.d);
                 if j == 0 {
                     next_w4_wire_value = self.get_variable(small_constraint.d.try_into().unwrap());
                 } else {
@@ -4336,16 +4438,21 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
             let next_w4_wire = self.add_variable(next_w4_wire_value);
 
             let mut last_constraint = constraint.last().unwrap().clone();
+            // Replace IS_CONSTANT with zero_idx for last gate too
+            last_constraint.b = fix_constant(last_constraint.b);
+            last_constraint.c = fix_constant(last_constraint.c);
             last_constraint.d = next_w4_wire;
             last_constraint.d_scaling = -P::ScalarField::one();
 
             self.create_big_mul_add_gate(&last_constraint, false);
         }
 
+
         // Add logic constraint
         for constraint in constraint_system.logic_constraints.iter() {
             self.create_logic_constraint(driver, constraint)?;
         }
+
 
         // Add range constraints
         // We want to decompose all shared elements in parallel
@@ -4353,16 +4460,13 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
             self.prepare_for_range_decompose(driver, constraint_system)?;
 
         for (i, constraint) in constraint_system.range_constraints.iter().enumerate() {
-            let mut range = constraint.num_bits;
-            if let Some(r) = constraint_system.minimal_range.get(&constraint.witness) {
-                range = *r;
-            }
+            let range = constraint.num_bits;
 
             let idx_option = bits_locations.get(&range);
             if let Some(idx) = idx_option
                 && decompose_indices[i].0
             {
-                // Already decomposed
+                // Already decomposed (MPC batch path)
                 let idx = idx.to_owned();
                 self.decompose_into_default_range(
                     driver,
@@ -4376,6 +4480,7 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
                 self.create_range_constraint(driver, constraint.witness, range)?;
             }
         }
+
 
         // Add aes128 constraints
         for constraint in constraint_system.aes128_constraints.iter() {

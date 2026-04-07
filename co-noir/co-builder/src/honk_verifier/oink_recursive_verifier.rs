@@ -75,14 +75,17 @@ impl OinkRecursiveVerifier {
             transcript.receive_point_from_prover("W_O".to_owned(), builder, driver)?;
 
         // Get eta challenges: used in RAM/ROM memory records and log derivative lookup argument
-        let [eta_1, eta_2, eta_3] = transcript
+        let [eta] = transcript
             .get_challenges(
-                &["eta_1".to_owned(), "eta_2".to_owned(), "eta_3".to_owned()],
+                &["eta".to_owned()],
                 builder,
                 driver,
             )?
             .try_into()
             .unwrap();
+        let eta_1 = eta.clone();
+        let eta_2 = eta.multiply(&eta, builder, driver)?;
+        let eta_3 = eta_2.multiply(&eta, builder, driver)?;
 
         // Get commitments to lookup argument polynomials and fourth wire
         *commitments.lookup_read_counts_mut() = transcript.receive_point_from_prover(
@@ -120,8 +123,12 @@ impl OinkRecursiveVerifier {
 
         let alpha = transcript.get_challenge("alpha".to_string(), builder, driver)?;
 
+        let beta_sqr = beta.multiply(&beta, builder, driver)?;
+        let beta_cube = beta_sqr.multiply(&beta, builder, driver)?;
         verification_key.relation_parameters = RelationParameters {
             beta,
+            beta_sqr,
+            beta_cube,
             gamma,
             eta_1,
             eta_2,
