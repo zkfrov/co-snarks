@@ -112,10 +112,13 @@ impl<T: NoirUltraHonkProver<C>, C: HonkCurve<TranscriptFieldType>> ProvingKeyTra
         // Construct and add to proving key the wire, selector and copy constraint polynomials
         proving_key.populate_trace(id, &mut circuit, driver, false);
 
+
         // First and last lagrange polynomials (in the full circuit size)
         proving_key.polynomials.precomputed.lagrange_first_mut()[0] = C::ScalarField::one();
         proving_key.polynomials.precomputed.lagrange_last_mut()[final_active_wire_idx] =
             C::ScalarField::one();
+
+
 
         PlainProvingKey::construct_lookup_table_polynomials(
             proving_key
@@ -148,6 +151,7 @@ impl<T: NoirUltraHonkProver<C>, C: HonkCurve<TranscriptFieldType>> ProvingKeyTra
                 .ok_or(HonkProofError::ExpectedPublicWitness)?;
             proving_key.public_inputs.push(var);
         }
+
 
         Ok(proving_key)
     }

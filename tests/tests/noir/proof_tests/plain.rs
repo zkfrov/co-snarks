@@ -51,6 +51,7 @@ fn plain_test<H: TranscriptHasher<TranscriptFieldType>>(
         .create_keys::<Bn254>(prover_crs.into(), verifier_crs, &mut driver)
         .unwrap();
 
+
     let (proof, public_inputs) =
         UltraHonk::<_, H>::prove(proving_key, has_zk, &verifying_key.inner_vk).unwrap();
     if has_zk == ZeroKnowledge::No {

@@ -25,6 +25,8 @@ pub(crate) struct Challenges<F: PrimeField> {
     pub(crate) eta_2: F,
     pub(crate) eta_3: F,
     pub(crate) beta: F,
+    pub(crate) beta_sqr: F,
+    pub(crate) beta_cube: F,
     pub(crate) gamma: F,
     pub(crate) alphas: [F; NUM_ALPHAS],
 }
@@ -36,6 +38,8 @@ impl<F: PrimeField> Default for Challenges<F> {
             eta_2: Default::default(),
             eta_3: Default::default(),
             beta: Default::default(),
+            beta_sqr: Default::default(),
+            beta_cube: Default::default(),
             gamma: Default::default(),
             alphas: [Default::default(); NUM_ALPHAS],
         }

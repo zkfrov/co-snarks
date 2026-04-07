@@ -1,8 +1,8 @@
 export CARGO_TERM_QUIET=true
-BARRETENBERG_BINARY=~/.bb/bb  ##specify the $BARRETENBERG_BINARY path here
+BARRETENBERG_BINARY=~/.aztec/current/node_modules/.bin/bb  ##specify the $BARRETENBERG_BINARY path here
 
-NARGO_VERSION=1.0.0-beta.17 ##specify the desired nargo version here
-BARRETENBERG_VERSION=3.0.0-nightly.20251104 ##specify the desired barretenberg version here or use the corresponding one for this nargo version
+NARGO_VERSION=1.0.0-beta.18 ##Aztec 4.2.0 ships this version string (actually post-beta.19)
+BARRETENBERG_VERSION=4.2.0-aztecnr-rc.2 ##specify the desired barretenberg version here
 PLAINDRIVER="../../../target/release/plaindriver"
 exit_code=0
 
@@ -46,29 +46,28 @@ run_proof_verification() {
   local name=$1
   local algorithm=$2
 
+  # bb 4.2.0 uses -t (verifier_target) instead of --scheme/--oracle_hash/--disable_zk
   if [[ "$algorithm" == "poseidon" ]]; then
-    prove_command="prove --scheme ultra_honk --oracle_hash poseidon2 --disable_zk"
-    write_command="write_vk --scheme ultra_honk --oracle_hash poseidon2 --disable_zk"
-    verify_command="verify --scheme ultra_honk --oracle_hash poseidon2 --disable_zk"
+    prove_command="prove -t noir-recursive-no-zk"
+    write_command="write_vk -t noir-recursive-no-zk"
+    verify_command="verify -t noir-recursive-no-zk"
   elif [[ "$algorithm" == "keccak" ]]; then
-    prove_command="prove --scheme ultra_honk --oracle_hash keccak --disable_zk"
-    write_command="write_vk --scheme ultra_honk --oracle_hash keccak --disable_zk"
-    verify_command="verify --scheme ultra_honk --oracle_hash keccak --disable_zk"
+    prove_command="prove -t evm-no-zk"
+    write_command="write_vk -t evm-no-zk"
+    verify_command="verify -t evm-no-zk"
   elif [[ "$algorithm" == "poseidon_zk" ]]; then
-    prove_command="prove --scheme ultra_honk --oracle_hash poseidon2"
-    write_command="write_vk --scheme ultra_honk --oracle_hash poseidon2"
-    verify_command="verify --scheme ultra_honk --oracle_hash poseidon2"
+    prove_command="prove -t noir-recursive"
+    write_command="write_vk -t noir-recursive"
+    verify_command="verify -t noir-recursive"
   else
-    prove_command="prove --scheme ultra_honk --oracle_hash keccak"
-    write_command="write_vk --scheme ultra_honk --oracle_hash keccak"
-    verify_command="verify --scheme ultra_honk --oracle_hash keccak"
+    prove_command="prove -t evm"
+    write_command="write_vk -t evm"
+    verify_command="verify -t evm"
   fi
 
   echo "comparing" $name "with bb and $algorithm transcript"
   
-  bash -c "$BARRETENBERG_BINARY $write_command -b test_vectors/${name}/target/${name}.json -o test_vectors/${name}/ $PIPE"
-
-  bash -c "$BARRETENBERG_BINARY $prove_command -b test_vectors/${name}/target/${name}.json -w test_vectors/${name}/target/${name}.gz -k test_vectors/${name}/vk -o test_vectors/${name}/ $PIPE"
+  bash -c "$BARRETENBERG_BINARY $prove_command --write_vk -b test_vectors/${name}/target/${name}.json -w test_vectors/${name}/target/${name}.gz -k test_vectors/${name} -o test_vectors/${name} $PIPE"
 
 
   if [[ ( "$algorithm" == "poseidon" || "$algorithm" == "keccak" ) && "$name" != "recursion" && "$name" != "recursion_zk" ]]; then

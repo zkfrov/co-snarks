@@ -81,7 +81,9 @@ pub const NUM_SELECTORS: usize = 14;
 // permutation argument polynomials (sigmas, ids) are unique, e.g. id[i][j] == id[m][n] iff (i == m && j == n)
 pub const PERMUTATION_ARGUMENT_VALUE_SEPARATOR: u32 = 1 << 28;
 
-pub const PAIRING_POINT_ACCUMULATOR_SIZE: u32 = 16;
+// bb combines 4 BigField limbs into 2 (lo/hi) per Fq coordinate.
+// 2 points × 2 coordinates × 2 (lo/hi) = 8 Fr elements.
+pub const PAIRING_POINT_ACCUMULATOR_SIZE: u32 = 8;
 
 pub const PUBLIC_INPUT_WIRE_INDEX: usize = ProverWitnessEntities::<
     <PlainUltraHonkDriver as NoirUltraHonkProver<Bn254G1>>::ArithmeticShare,
