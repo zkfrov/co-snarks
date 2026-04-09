@@ -270,15 +270,17 @@ impl SumcheckRound {
         let batch_size = MAX_ROUND_SIZE_PER_BATCH;
         let mut start = 0;
         let mut univariate_accumulators = AllRelationAccHalfShared::<T, P>::default();
+        // Reuse buffer across all edges — extend_from overwrites completely, no reset needed.
+        // Eliminates ~500K allocations per round × 20 rounds = 10M allocations.
+        let mut extended_edges = ProverUnivariates::<T, P>::default();
         while start < self.round_size {
             let end = (start + batch_size).min(self.round_size);
             let mut all_entities = AllEntitiesBatchRelations::new();
             for edge_idx in (start..end).step_by(2) {
-                let mut extended_edges = ProverUnivariates::<T, P>::default();
                 Self::extend_edges(&mut extended_edges, polynomials, edge_idx);
                 let scaling_factor =
                     gate_separators.beta_products[(edge_idx >> 1) * gate_separators.periodicity];
-                all_entities.fold_and_filter(extended_edges, scaling_factor);
+                all_entities.fold_and_filter(&extended_edges, scaling_factor);
             }
             Self::accumulate_relation_univariates_batch(
                 net,
@@ -436,7 +438,7 @@ impl SumcheckRound {
             Self::extend_edges(&mut extended_edges, polynomials, edge_idx);
             let scaling_factor =
                 gate_separators.beta_products[(edge_idx >> 1) * gate_separators.periodicity];
-            all_entities.fold_and_filter(extended_edges, scaling_factor);
+            all_entities.fold_and_filter(&extended_edges, scaling_factor);
         }
 
         let mut univariate_accumulators = AllRelationAccHalfShared::<T, P>::default();
@@ -498,7 +500,7 @@ impl SumcheckRound {
 
         // The tail of G(X) = \prod_{k} (1 + X_k(\beta_k - 1) ) evaluated at the edge (0, ..., 0).
         let gate_separator_tail = P::ScalarField::one();
-        all_entities.fold_and_filter(extended_edges, gate_separator_tail);
+        all_entities.fold_and_filter(&extended_edges, gate_separator_tail);
         Self::accumulate_relation_univariates_batch(
             net,
             state,

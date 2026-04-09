@@ -104,7 +104,7 @@ where
 
     pub fn fold_and_filter(
         &mut self,
-        entity: AllEntities<Shared<T, P>, Public<P>>,
+        entity: &AllEntities<Shared<T, P>, Public<P>>,
         scaling_factor: P::ScalarField,
     ) {
         // 0xThemis TODO - for all (?) accumulator we don't need all 7 elements. Can we remove
