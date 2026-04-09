@@ -39,27 +39,30 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate init");
 
-        // Barretenberg uses multithreading here
+        use rayon::prelude::*;
+        let challenge = *round_challenge;
 
-        for (poly_src, poly_des) in polys
+        polys
             .public_iter()
             .zip(partially_evaluated_poly.public_iter_mut())
-        {
-            for i in (0..round_size).step_by(2) {
-                poly_des[i >> 1] = poly_src[i] + (poly_src[i + 1] - poly_src[i]) * round_challenge;
-            }
-        }
+            .par_bridge()
+            .for_each(|(poly_src, poly_des)| {
+                for i in (0..round_size).step_by(2) {
+                    poly_des[i >> 1] = poly_src[i] + (poly_src[i + 1] - poly_src[i]) * challenge;
+                }
+            });
 
-        for (poly_src, poly_des) in polys
+        polys
             .shared_iter()
             .zip(partially_evaluated_poly.shared_iter_mut())
-        {
-            for i in (0..round_size).step_by(2) {
-                let tmp = T::sub(poly_src[i + 1], poly_src[i]);
-                let tmp = T::mul_with_public(*round_challenge, tmp);
-                poly_des[i >> 1] = T::add(poly_src[i], tmp);
-            }
-        }
+            .par_bridge()
+            .for_each(|(poly_src, poly_des)| {
+                for i in (0..round_size).step_by(2) {
+                    let tmp = T::sub(poly_src[i + 1], poly_src[i]);
+                    let tmp = T::mul_with_public(challenge, tmp);
+                    poly_des[i >> 1] = T::add(poly_src[i], tmp);
+                }
+            });
     }
 
     pub(crate) fn partially_evaluate_inplace(
@@ -68,33 +71,34 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate inplace");
 
-        // Barretenberg uses multithreading here
+        use rayon::prelude::*;
+        let challenge = *round_challenge;
 
-        for poly in partially_evaluated_poly.public_iter_mut() {
+        // Process all public polynomials in parallel
+        partially_evaluated_poly.public_iter_mut().par_bridge().for_each(|poly| {
             let limit = poly.len();
             for i in (0..limit).step_by(2) {
-                poly[i >> 1] = poly[i] + (poly[i + 1] - poly[i]) * round_challenge;
+                poly[i >> 1] = poly[i] + (poly[i + 1] - poly[i]) * challenge;
             }
-
             poly.truncate(limit / 2 + limit % 2);
             if poly.len() < 2 {
                 poly.push(P::ScalarField::zero());
             }
-        }
+        });
 
-        for poly in partially_evaluated_poly.shared_iter_mut() {
+        // Process all shared polynomials in parallel
+        partially_evaluated_poly.shared_iter_mut().par_bridge().for_each(|poly| {
             let limit = poly.len();
             for i in (0..limit).step_by(2) {
                 let tmp = T::sub(poly[i + 1], poly[i]);
-                let tmp = T::mul_with_public(*round_challenge, tmp);
+                let tmp = T::mul_with_public(challenge, tmp);
                 poly[i >> 1] = T::add(poly[i], tmp);
             }
-
             poly.truncate(limit / 2 + limit % 2);
             if poly.len() < 2 {
                 poly.push(T::ArithmeticShare::default());
             }
-        }
+        });
     }
 
     fn add_evals_to_transcript(

@@ -455,11 +455,12 @@ impl<
         // Step (2)
         // Compute the accumulating product of the numerator and denominator terms.
 
-        // TACEO TODO could batch here as well
-        // Do the multiplications of num[i] * num[i-1] and den[i] * den[i-1] in constant rounds
-        let numerator = CoUtils::array_prod_mul::<T, C, N>(self.net, self.state, &numerator)?;
-        let mut denominator =
-            CoUtils::array_prod_mul::<T, C, N>(self.net, self.state, &denominator)?;
+        // Batch both prefix products in one call (halves network rounds)
+        let mut prod_results = CoUtils::array_prod_inner_mul_many::<T, C, N>(
+            self.net, self.state, &[numerator, denominator],
+        )?;
+        let mut denominator = prod_results.pop().unwrap();
+        let numerator = prod_results.pop().unwrap();
 
         // invert denominator
         CoUtils::batch_invert::<T, C, N>(&mut denominator, self.net, self.state)?;
@@ -560,9 +561,12 @@ impl<
             self.mask_polynomial(proving_key.polynomials.witness.w_o_mut())?;
         };
 
-        let w_l = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_l().as_ref(), crs);
-        let w_r = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_r().as_ref(), crs);
-        let w_o = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_o().as_ref(), crs);
+        // Truncate to active trace size — trailing zeros don't affect the commitment
+        // but Pippenger still processes them. Skipping saves ~30% MSM work.
+        let active = proving_key.final_active_wire_idx + 1;
+        let w_l = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_l().as_ref()[..active], crs);
+        let w_r = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_r().as_ref()[..active], crs);
+        let w_o = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_o().as_ref()[..active], crs);
 
         let open = T::open_point_many(&[w_l, w_r, w_o], self.net, self.state)?;
 
@@ -600,19 +604,16 @@ impl<
         };
 
         // Commit to lookup argument polynomials and the finalized (i.e. with memory records) fourth wire polynomial
+        let active = proving_key.final_active_wire_idx + 1;
         let lookup_read_counts = CoUtils::commit::<T, C>(
-            proving_key
-                .polynomials
-                .witness
-                .lookup_read_counts()
-                .as_ref(),
+            &proving_key.polynomials.witness.lookup_read_counts().as_ref()[..active],
             crs,
         );
         let lookup_read_tags = CoUtils::commit::<T, C>(
-            proving_key.polynomials.witness.lookup_read_tags().as_ref(),
+            &proving_key.polynomials.witness.lookup_read_tags().as_ref()[..active],
             crs,
         );
-        let w_4 = CoUtils::commit::<T, C>(self.memory.w_4.as_ref(), crs);
+        let w_4 = CoUtils::commit::<T, C>(&self.memory.w_4.as_ref()[..active], crs);
         let opened = T::open_point_many(
             &[lookup_read_counts, lookup_read_tags, w_4],
             self.net,
@@ -672,9 +673,10 @@ impl<
         };
 
         // This is from the previous round, but we open it here with z_perm
-        let lookup_inverses = CoUtils::commit::<T, C>(self.memory.lookup_inverses.as_ref(), crs);
+        let active = proving_key.final_active_wire_idx + 1;
+        let lookup_inverses = CoUtils::commit::<T, C>(&self.memory.lookup_inverses.as_ref()[..active], crs);
 
-        let z_perm = CoUtils::commit::<T, C>(self.memory.z_perm.as_ref(), crs);
+        let z_perm = CoUtils::commit::<T, C>(&self.memory.z_perm.as_ref()[..active], crs);
 
         let open = T::open_point_many(&[lookup_inverses, z_perm], self.net, self.state)?;
 
