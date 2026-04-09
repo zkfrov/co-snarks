@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+mac-free = ["spdz-core/mac-free"]
+
 [dependencies]
 spdz-core = { path = "../core" }
 co-spdz-acvm = { path = "../acvm" }

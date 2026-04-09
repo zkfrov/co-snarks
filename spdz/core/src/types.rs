@@ -60,15 +60,16 @@ impl<F: PrimeField> SpdzPrimeFieldShare<F> {
     /// Double in place.
     pub fn double_in_place(&mut self) {
         self.share.double_in_place();
+        #[cfg(not(feature = "mac-free"))]
         self.mac.double_in_place();
     }
 
     /// Double.
     pub fn double(&self) -> Self {
-        Self {
-            share: self.share.double(),
-            mac: self.mac.double(),
-        }
+        #[cfg(feature = "mac-free")]
+        { Self { share: self.share.double(), mac: F::zero() } }
+        #[cfg(not(feature = "mac-free"))]
+        { Self { share: self.share.double(), mac: self.mac.double() } }
     }
 
     /// Promote a public value to a trivial SPDZ share.
@@ -87,112 +88,104 @@ impl<F: PrimeField> SpdzPrimeFieldShare<F> {
     }
 }
 
-// ── Operator impls: all linear ops work component-wise on (share, mac) ──
+// ── Operator impls ──
+// With `mac-free` feature: only operate on `share`, skip MAC entirely.
+// Without: operate on both `share` and `mac` (standard SPDZ).
+
+macro_rules! share_op {
+    ($share_expr:expr, $mac_expr:expr) => {{
+        #[cfg(feature = "mac-free")]
+        { SpdzPrimeFieldShare { share: $share_expr, mac: F::zero() } }
+        #[cfg(not(feature = "mac-free"))]
+        { SpdzPrimeFieldShare { share: $share_expr, mac: $mac_expr } }
+    }};
+}
+
+macro_rules! share_op_assign {
+    ($self:expr, $share_stmt:stmt, $mac_stmt:stmt) => {{
+        $share_stmt
+        #[cfg(not(feature = "mac-free"))]
+        { $mac_stmt }
+    }};
+}
 
 impl<F: PrimeField> std::ops::Add for SpdzPrimeFieldShare<F> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self {
-            share: self.share + rhs.share,
-            mac: self.mac + rhs.mac,
-        }
+        share_op!(self.share + rhs.share, self.mac + rhs.mac)
     }
 }
 
 impl<F: PrimeField> std::ops::Add<&SpdzPrimeFieldShare<F>> for &SpdzPrimeFieldShare<F> {
     type Output = SpdzPrimeFieldShare<F>;
     fn add(self, rhs: &SpdzPrimeFieldShare<F>) -> SpdzPrimeFieldShare<F> {
-        SpdzPrimeFieldShare {
-            share: self.share + rhs.share,
-            mac: self.mac + rhs.mac,
-        }
+        share_op!(self.share + rhs.share, self.mac + rhs.mac)
     }
 }
 
 impl<F: PrimeField> std::ops::AddAssign for SpdzPrimeFieldShare<F> {
     fn add_assign(&mut self, rhs: Self) {
-        self.share += rhs.share;
-        self.mac += rhs.mac;
+        share_op_assign!(self, self.share += rhs.share, self.mac += rhs.mac);
     }
 }
 
 impl<F: PrimeField> std::ops::AddAssign<&SpdzPrimeFieldShare<F>> for SpdzPrimeFieldShare<F> {
     fn add_assign(&mut self, rhs: &Self) {
-        self.share += rhs.share;
-        self.mac += rhs.mac;
+        share_op_assign!(self, self.share += rhs.share, self.mac += rhs.mac);
     }
 }
 
 impl<F: PrimeField> std::ops::Sub for SpdzPrimeFieldShare<F> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self {
-            share: self.share - rhs.share,
-            mac: self.mac - rhs.mac,
-        }
+        share_op!(self.share - rhs.share, self.mac - rhs.mac)
     }
 }
 
 impl<F: PrimeField> std::ops::Sub<&SpdzPrimeFieldShare<F>> for &SpdzPrimeFieldShare<F> {
     type Output = SpdzPrimeFieldShare<F>;
     fn sub(self, rhs: &SpdzPrimeFieldShare<F>) -> SpdzPrimeFieldShare<F> {
-        SpdzPrimeFieldShare {
-            share: self.share - rhs.share,
-            mac: self.mac - rhs.mac,
-        }
+        share_op!(self.share - rhs.share, self.mac - rhs.mac)
     }
 }
 
 impl<F: PrimeField> std::ops::SubAssign for SpdzPrimeFieldShare<F> {
     fn sub_assign(&mut self, rhs: Self) {
-        self.share -= rhs.share;
-        self.mac -= rhs.mac;
+        share_op_assign!(self, self.share -= rhs.share, self.mac -= rhs.mac);
     }
 }
 
 impl<F: PrimeField> std::ops::SubAssign<&SpdzPrimeFieldShare<F>> for SpdzPrimeFieldShare<F> {
     fn sub_assign(&mut self, rhs: &Self) {
-        self.share -= rhs.share;
-        self.mac -= rhs.mac;
+        share_op_assign!(self, self.share -= rhs.share, self.mac -= rhs.mac);
     }
 }
 
 impl<F: PrimeField> std::ops::Neg for SpdzPrimeFieldShare<F> {
     type Output = Self;
     fn neg(self) -> Self {
-        Self {
-            share: -self.share,
-            mac: -self.mac,
-        }
+        share_op!(-self.share, -self.mac)
     }
 }
 
 /// Scalar multiplication by a public field element.
-/// Multiplies both the share and MAC components.
 impl<F: PrimeField> std::ops::Mul<F> for SpdzPrimeFieldShare<F> {
     type Output = Self;
     fn mul(self, rhs: F) -> Self {
-        Self {
-            share: self.share * rhs,
-            mac: self.mac * rhs,
-        }
+        share_op!(self.share * rhs, self.mac * rhs)
     }
 }
 
 impl<F: PrimeField> std::ops::Mul<F> for &SpdzPrimeFieldShare<F> {
     type Output = SpdzPrimeFieldShare<F>;
     fn mul(self, rhs: F) -> SpdzPrimeFieldShare<F> {
-        SpdzPrimeFieldShare {
-            share: self.share * rhs,
-            mac: self.mac * rhs,
-        }
+        share_op!(self.share * rhs, self.mac * rhs)
     }
 }
 
 impl<F: PrimeField> std::ops::MulAssign<F> for SpdzPrimeFieldShare<F> {
     fn mul_assign(&mut self, rhs: F) {
-        self.share *= rhs;
-        self.mac *= rhs;
+        share_op_assign!(self, self.share *= rhs, self.mac *= rhs);
     }
 }
 
