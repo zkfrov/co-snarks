@@ -28,7 +28,12 @@ pub fn add_public<F: PrimeField>(
     } else {
         shared.share
     };
-    let mac = shared.mac + mac_key_share * public;
+    // MAC-free: skip mac_key_share * public when mac_key_share is zero
+    let mac = if mac_key_share.is_zero() {
+        shared.mac // stays zero in mac-free mode
+    } else {
+        shared.mac + mac_key_share * public
+    };
     SpdzPrimeFieldShare::new(share, mac)
 }
 
@@ -103,6 +108,17 @@ pub fn open_point<C: CurveGroup, N: Network>(
     Ok(share.share + other_share)
 }
 
+/// Open many point shares in a single communication round.
+pub fn open_point_many<C: CurveGroup, N: Network>(
+    shares: &[SpdzPointShare<C>],
+    net: &N,
+) -> eyre::Result<Vec<C>> {
+    // Only exchange share component (not MAC) — halves bandwidth
+    let my_shares: Vec<C> = shares.iter().map(|s| s.share).collect();
+    let other_shares: Vec<C> = net.exchange_many(&my_shares)?;
+    Ok(my_shares.iter().zip(other_shares.iter()).map(|(a, b)| *a + b).collect())
+}
+
 // ────────────────────────── Beaver Multiplication ──────────────────────────
 
 /// Multiply two SPDZ shares using a Beaver triple.
@@ -151,6 +167,10 @@ pub fn mul_many<F: PrimeField, N: Network>(
         return Ok(vec![]);
     }
 
+    if state.mac_free {
+        return mul_many_mac_free(xs, ys, net, state);
+    }
+
     let (a_vec, b_vec, c_vec) = state.preprocessing.next_triple_batch(n)?;
 
     // Compute masked differences
@@ -179,6 +199,48 @@ pub fn mul_many<F: PrimeField, N: Network>(
         z += a_vec[i] * del;
         z = add_public(z, eps * del, state.mac_key_share, state.id);
         results.push(z);
+    }
+
+    Ok(results)
+}
+
+/// MAC-free Beaver multiplication — operates only on share components, skipping all MAC arithmetic.
+fn mul_many_mac_free<F: PrimeField, N: Network>(
+    xs: &[SpdzPrimeFieldShare<F>],
+    ys: &[SpdzPrimeFieldShare<F>],
+    net: &N,
+    state: &mut SpdzState<F>,
+) -> eyre::Result<Vec<SpdzPrimeFieldShare<F>>> {
+    let n = xs.len();
+    let (a_vec, b_vec, c_vec) = state.preprocessing.next_triple_batch(n)?;
+
+    // Compute masked differences — share component only
+    let mut eps_my = Vec::with_capacity(n);
+    let mut del_my = Vec::with_capacity(n);
+    for i in 0..n {
+        eps_my.push(xs[i].share - a_vec[i].share);
+        del_my.push(ys[i].share - b_vec[i].share);
+    }
+
+    // Batch exchange share components in one round
+    use crate::network::SpdzNetworkExt;
+    let mut to_send = Vec::with_capacity(2 * n);
+    to_send.extend_from_slice(&eps_my);
+    to_send.extend_from_slice(&del_my);
+    let received: Vec<F> = net.exchange_many(&to_send)?;
+    let (eps_other, del_other) = received.split_at(n);
+
+    // Reconstruct opened values
+    let mut results = Vec::with_capacity(n);
+    for i in 0..n {
+        let eps = eps_my[i] + eps_other[i];
+        let del = del_my[i] + del_other[i];
+        // z.share = c.share + eps * b.share + del * a.share + (party_0_only: eps * del)
+        let mut z_share = c_vec[i].share + eps * b_vec[i].share + del * a_vec[i].share;
+        if state.id == 0 {
+            z_share += eps * del;
+        }
+        results.push(SpdzPrimeFieldShare::new(z_share, F::zero()));
     }
 
     Ok(results)
@@ -378,10 +440,16 @@ pub fn msm_public_points<C: CurveGroup>(
     scalars: &[SpdzPrimeFieldShare<C::ScalarField>],
 ) -> SpdzPointShare<C> {
     let shares: Vec<C::ScalarField> = scalars.iter().map(|s| s.share).collect();
-    let macs: Vec<C::ScalarField> = scalars.iter().map(|s| s.mac).collect();
-
     let share = C::msm_unchecked(points, &shares);
-    let mac = C::msm_unchecked(points, &macs);
+
+    // Skip MAC MSM if all MACs are zero (mac_free mode)
+    use ark_ff::Zero;
+    let mac = if scalars.first().is_some_and(|s| s.mac.is_zero()) && scalars.iter().all(|s| s.mac.is_zero()) {
+        C::zero()
+    } else {
+        let macs: Vec<C::ScalarField> = scalars.iter().map(|s| s.mac).collect();
+        C::msm_unchecked(points, &macs)
+    };
 
     SpdzPointShare::new(share, mac)
 }
@@ -397,16 +465,17 @@ pub fn fft<F: PrimeField>(
     domain: &impl ark_poly::EvaluationDomain<F>,
 ) -> Vec<SpdzPrimeFieldShare<F>> {
     let shares: Vec<F> = data.iter().map(|s| s.share).collect();
-    let macs: Vec<F> = data.iter().map(|s| s.mac).collect();
-
     let fft_shares = domain.fft(&shares);
-    let fft_macs = domain.fft(&macs);
 
-    fft_shares
-        .into_iter()
-        .zip(fft_macs)
-        .map(|(s, m)| SpdzPrimeFieldShare::new(s, m))
-        .collect()
+    // Skip MAC FFT if MACs are all zero (mac_free mode)
+    let mac_free = data.first().is_some_and(|s| s.mac.is_zero());
+    if mac_free {
+        fft_shares.into_iter().map(|s| SpdzPrimeFieldShare::new(s, F::zero())).collect()
+    } else {
+        let macs: Vec<F> = data.iter().map(|s| s.mac).collect();
+        let fft_macs = domain.fft(&macs);
+        fft_shares.into_iter().zip(fft_macs).map(|(s, m)| SpdzPrimeFieldShare::new(s, m)).collect()
+    }
 }
 
 /// Compute inverse FFT of SPDZ shares.
@@ -415,6 +484,13 @@ pub fn ifft<F: PrimeField>(
     domain: &impl ark_poly::EvaluationDomain<F>,
 ) -> Vec<SpdzPrimeFieldShare<F>> {
     let shares: Vec<F> = data.iter().map(|s| s.share).collect();
+    let mac_free = data.first().is_some_and(|s| s.mac.is_zero());
+
+    if mac_free {
+        let ifft_shares = domain.ifft(&shares);
+        return ifft_shares.into_iter().map(|s| SpdzPrimeFieldShare::new(s, F::zero())).collect();
+    }
+
     let macs: Vec<F> = data.iter().map(|s| s.mac).collect();
 
     let ifft_shares = domain.ifft(&shares);
@@ -439,9 +515,19 @@ pub fn eval_poly<F: PrimeField>(
     if coeffs.is_empty() {
         return SpdzPrimeFieldShare::zero_share();
     }
+    // MAC-free fast path: only evaluate on share component
+    let mac_free = coeffs[0].mac.is_zero();
+    if mac_free {
+        let mut result = coeffs.last().unwrap().share;
+        for c in coeffs.iter().rev().skip(1) {
+            result *= point;
+            result += c.share;
+        }
+        return SpdzPrimeFieldShare::new(result, F::zero());
+    }
     let mut result = *coeffs.last().unwrap();
     for c in coeffs.iter().rev().skip(1) {
-        result = result * point; // mul by public scalar
+        result = result * point;
         result += *c;
     }
     result
@@ -455,7 +541,14 @@ pub fn scalar_mul_public_point<C: CurveGroup>(
     point: &C,
     scalar: &SpdzPrimeFieldShare<C::ScalarField>,
 ) -> SpdzPointShare<C> {
-    SpdzPointShare::new(*point * scalar.share, *point * scalar.mac)
+    use ark_ff::Zero as _;
+    let share = *point * scalar.share;
+    let mac = if scalar.mac.is_zero() {
+        C::zero() // MAC-free: skip expensive point multiplication
+    } else {
+        *point * scalar.mac
+    };
+    SpdzPointShare::new(share, mac)
 }
 
 #[cfg(test)]

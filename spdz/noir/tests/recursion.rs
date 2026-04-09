@@ -17,7 +17,7 @@ const CRS_PATH_G1: &str = "../../co-noir/co-noir-common/src/crs/bn254_g1.dat";
 const CRS_PATH_G2: &str = "../../co-noir/co-noir-common/src/crs/bn254_g2.dat";
 const CIRCUIT_DIR: &str = "../../test_vectors/noir/recursion";
 
-fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge) {
+fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge, mac_free: bool) {
     let circuit_file = format!("{CIRCUIT_DIR}/kat/recursion.json");
     let witness_file = format!("{CIRCUIT_DIR}/kat/recursion.gz");
 
@@ -47,8 +47,16 @@ fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge) {
     // No upfront allocation, no "ran out" errors, minimal RAM.
     let pk_prep_0 = create_lazy_preprocessing::<ark_bn254::Fr>(42, 0);
     let pk_prep_1 = create_lazy_preprocessing::<ark_bn254::Fr>(42, 1);
-    let prove_prep_0 = create_lazy_preprocessing::<ark_bn254::Fr>(43, 0);
-    let prove_prep_1 = create_lazy_preprocessing::<ark_bn254::Fr>(43, 1);
+    let (prove_prep_0, prove_prep_1) = if mac_free {
+        // MAC-free preprocessing: zero MAC key, no MAC computation
+        let p0 = spdz_core::preprocessing::create_lazy_preprocessing_mac_free::<ark_bn254::Fr>(43, 0);
+        let p1 = spdz_core::preprocessing::create_lazy_preprocessing_mac_free::<ark_bn254::Fr>(43, 1);
+        (p0, p1)
+    } else {
+        let p0 = create_lazy_preprocessing::<ark_bn254::Fr>(43, 0);
+        let p1 = create_lazy_preprocessing::<ark_bn254::Fr>(43, 1);
+        (p0, p1)
+    };
 
     let mut nets = LocalNetwork::new(2).into_iter();
     let net0 = nets.next().unwrap();
@@ -64,13 +72,24 @@ fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge) {
     let cs_1 = co_noir::get_constraint_system_from_artifact(&program_artifact);
 
     let t0 = std::thread::spawn(move || {
+        let t = std::time::Instant::now();
         let pk = co_spdz_noir::generate_proving_key_spdz(
             Box::new(pk_prep_0), &cs_0, witness_0, &net0, &crs_0,
         ).expect("P0: pk generation failed");
+        eprintln!("P0: pk generation took {:.1}s", t.elapsed().as_secs_f64());
 
-        co_spdz_noir::prove_spdz::<_, H, _>(
-            &net0, Box::new(prove_prep_0), pk, &crs_0, has_zk, &vk_0.inner_vk,
-        ).expect("P0: proving failed")
+        let t = std::time::Instant::now();
+        let result = if mac_free {
+            co_spdz_noir::prove_spdz_mac_free::<_, H, _>(
+                &net0, Box::new(prove_prep_0), pk, &crs_0, has_zk, &vk_0.inner_vk,
+            ).expect("P0: proving failed")
+        } else {
+            co_spdz_noir::prove_spdz::<_, H, _>(
+                &net0, Box::new(prove_prep_0), pk, &crs_0, has_zk, &vk_0.inner_vk,
+            ).expect("P0: proving failed")
+        };
+        eprintln!("P0: proving took {:.1}s (mac_free={})", t.elapsed().as_secs_f64(), mac_free);
+        result
     });
 
     let t1 = std::thread::spawn(move || {
@@ -78,9 +97,15 @@ fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge) {
             Box::new(pk_prep_1), &cs_1, witness_1, &net1, &crs_1,
         ).expect("P1: pk generation failed");
 
-        co_spdz_noir::prove_spdz::<_, H, _>(
-            &net1, Box::new(prove_prep_1), pk, &crs_1, has_zk, &vk_1.inner_vk,
-        ).expect("P1: proving failed")
+        if mac_free {
+            co_spdz_noir::prove_spdz_mac_free::<_, H, _>(
+                &net1, Box::new(prove_prep_1), pk, &crs_1, has_zk, &vk_1.inner_vk,
+            ).expect("P1: proving failed")
+        } else {
+            co_spdz_noir::prove_spdz::<_, H, _>(
+                &net1, Box::new(prove_prep_1), pk, &crs_1, has_zk, &vk_1.inner_vk,
+            ).expect("P1: proving failed")
+        }
     });
 
     let (proof_0, pi_0) = t0.join().expect("P0 thread panicked");
@@ -96,5 +121,11 @@ fn proof_test<H: TranscriptHasher<TranscriptFieldType>>(has_zk: ZeroKnowledge) {
 #[test]
 #[ignore = "Recursion circuit is very slow with SPDZ"]
 fn test_spdz_recursion_poseidon2() {
-    proof_test::<co_noir_common::transcript::Poseidon2Sponge>(ZeroKnowledge::No);
+    proof_test::<co_noir_common::transcript::Poseidon2Sponge>(ZeroKnowledge::No, false);
+}
+
+#[test]
+#[ignore = "Recursion circuit is very slow with SPDZ"]
+fn test_spdz_recursion_mac_free() {
+    proof_test::<co_noir_common::transcript::Poseidon2Sponge>(ZeroKnowledge::No, true);
 }

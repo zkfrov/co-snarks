@@ -280,13 +280,22 @@ impl<F: PrimeField> LazyDummyPreprocessing<F> {
         use ark_ff::UniformRand;
         let s0 = F::rand(rng);
         let s1 = val - s0;
-        let mac = mac_key * val;
-        let m0 = F::rand(rng);
-        let m1 = mac - m0;
-        if party_id == 0 {
-            SpdzPrimeFieldShare::new(s0, m0)
+        if mac_key.is_zero() {
+            // MAC-free mode: skip MAC computation entirely
+            if party_id == 0 {
+                SpdzPrimeFieldShare::new(s0, F::zero())
+            } else {
+                SpdzPrimeFieldShare::new(s1, F::zero())
+            }
         } else {
-            SpdzPrimeFieldShare::new(s1, m1)
+            let mac = mac_key * val;
+            let m0 = F::rand(rng);
+            let m1 = mac - m0;
+            if party_id == 0 {
+                SpdzPrimeFieldShare::new(s0, m0)
+            } else {
+                SpdzPrimeFieldShare::new(s1, m1)
+            }
         }
     }
 
@@ -352,12 +361,38 @@ pub fn create_lazy_preprocessing<F: PrimeField>(
     seed: u64,
     party_id: usize,
 ) -> LazyDummyPreprocessing<F> {
+    create_lazy_preprocessing_inner(seed, party_id, false)
+}
+
+/// Create MAC-free lazy preprocessing. MAC key is zero, so all MAC components are zero.
+/// Halves computation cost in preprocessing generation and Beaver multiplication.
+pub fn create_lazy_preprocessing_mac_free<F: PrimeField>(
+    seed: u64,
+    party_id: usize,
+) -> LazyDummyPreprocessing<F> {
+    create_lazy_preprocessing_inner(seed, party_id, true)
+}
+
+fn create_lazy_preprocessing_inner<F: PrimeField>(
+    seed: u64,
+    party_id: usize,
+    mac_free: bool,
+) -> LazyDummyPreprocessing<F> {
     use ark_ff::UniformRand;
     use rand::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(seed);
-    let mac_key = F::rand(&mut rng);
-    let mac_key_0 = F::rand(&mut rng);
-    let mac_key_1 = mac_key - mac_key_0;
+
+    let (mac_key, mac_key_0, mac_key_1) = if mac_free {
+        // Consume the same random values to keep RNG in sync, but use zero keys
+        let _ = F::rand(&mut rng);
+        let _ = F::rand(&mut rng);
+        (F::zero(), F::zero(), F::zero())
+    } else {
+        let mac_key = F::rand(&mut rng);
+        let mac_key_0 = F::rand(&mut rng);
+        let mac_key_1 = mac_key - mac_key_0;
+        (mac_key, mac_key_0, mac_key_1)
+    };
 
     LazyDummyPreprocessing {
         mac_key,

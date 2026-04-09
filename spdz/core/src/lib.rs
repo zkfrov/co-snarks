@@ -29,6 +29,11 @@ pub struct SpdzState<F: PrimeField> {
     /// Whether to verify MACs on open (default: true).
     /// Set to false for semi-honest mode (faster, no cheating detection).
     pub verify_macs: bool,
+    /// Whether to skip MAC computation entirely (default: false).
+    /// When true, MAC fields are set to zero — no MAC arithmetic, MSM, or FFT.
+    /// Use this when the SNARK proof provides soundness (e.g., collaborative proving).
+    /// This roughly halves local computation and network bandwidth.
+    pub mac_free: bool,
     /// Raw pointer to the network, used by local_mul_vec for Beaver multiplication.
     /// Safety: set via `set_network` and valid for the duration of the proving call.
     net_ptr: Option<(*const u8, fn(*const u8, &[SpdzPrimeFieldShare<F>], &[SpdzPrimeFieldShare<F>], &mut Box<dyn SpdzPreprocessing<F>>, F, usize) -> eyre::Result<Vec<SpdzPrimeFieldShare<F>>>)>,
@@ -41,13 +46,25 @@ impl<F: PrimeField> SpdzState<F> {
     pub fn new(id: usize, preprocessing: Box<dyn SpdzPreprocessing<F>>) -> Self {
         assert!(id < 2, "SPDZ is a 2-party protocol, party ID must be 0 or 1");
         let mac_key_share = preprocessing.mac_key_share();
-        Self { id, mac_key_share, preprocessing, beaver_buffer: None, verify_macs: true, net_ptr: None }
+        Self { id, mac_key_share, preprocessing, beaver_buffer: None, verify_macs: true, mac_free: false, net_ptr: None }
     }
 
     /// Create a new SPDZ state with MAC verification disabled (semi-honest mode).
     pub fn new_semi_honest(id: usize, preprocessing: Box<dyn SpdzPreprocessing<F>>) -> Self {
         let mut state = Self::new(id, preprocessing);
         state.verify_macs = false;
+        state
+    }
+
+    /// Create a new SPDZ state with MAC computation entirely skipped.
+    /// MAC fields are zero — no MAC arithmetic, MSM, or FFT.
+    /// Use when the SNARK proof provides soundness (collaborative proving).
+    /// Roughly halves local computation and network bandwidth.
+    pub fn new_mac_free(id: usize, preprocessing: Box<dyn SpdzPreprocessing<F>>) -> Self {
+        let mut state = Self::new(id, preprocessing);
+        state.verify_macs = false;
+        state.mac_free = true;
+        state.mac_key_share = F::zero(); // Zero MAC key → all MACs are zero
         state
     }
 
@@ -133,6 +150,7 @@ impl<F: PrimeField> MpcState for SpdzState<F> {
             preprocessing: forked_prep,
             beaver_buffer: None,
             verify_macs: self.verify_macs,
+            mac_free: self.mac_free,
             net_ptr: self.net_ptr,
         })
     }

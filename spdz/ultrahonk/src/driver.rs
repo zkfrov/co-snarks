@@ -99,44 +99,42 @@ impl<P: CurveGroup<BaseField: PrimeField>> NoirUltraHonkProver<P> for SpdzUltraH
         b: &[Self::ArithmeticShare],
         state: &mut Self::State,
     ) -> Vec<P::ScalarField> {
-        // SPDZ multiplication REQUIRES network communication (Beaver triples).
-        // We run the full Beaver protocol here via the network stored in state.
+        // SPDZ Beaver multiplication requires network. We do the full protocol here.
+        // The network is accessed via state.mul_via_net which stores a network pointer.
+        //
+        // NOTE: This means each call to local_mul_vec is a network round.
+        // For SPDZ, the local_mul_vec/reshare split doesn't save rounds like it does
+        // for Rep3. The sumcheck already minimizes calls to local_mul_vec (once per relation
+        // that needs it), so this is acceptable.
         let results = state
             .mul_via_net(a, b)
             .expect("Beaver multiplication failed in local_mul_vec");
 
-        // Return just the .share component — the prover accumulates these
-        // with public scalars, preserving the additive sharing property.
         results.iter().map(|r| r.share).collect()
     }
 
     fn reshare<N: Network>(
         a: Vec<P::ScalarField>,
         net: &N,
-        _state: &mut Self::State,
+        state: &mut Self::State,
     ) -> eyre::Result<Vec<Self::ArithmeticShare>> {
-        // The values in `a` are accumulated .share components from local_mul_vec
-        // results (which did full Beaver multiplication). Since the accumulation
-        // only applies public-scalar operations, these are valid additive shares.
-        // Exchange to compute full values for MAC generation.
         use spdz_core::network::SpdzNetworkExt;
         let other_halves: Vec<P::ScalarField> = net.exchange_many(&a)?;
-        let full_values: Vec<P::ScalarField> = a
-            .iter()
-            .zip(other_halves.iter())
-            .map(|(a, b)| *a + *b)
-            .collect();
 
-        Ok(full_values
-            .iter()
-            .zip(a.iter())
-            .map(|(full, my_half)| {
-                SpdzPrimeFieldShare::new(
-                    *my_half,
-                    _state.mac_key_share * full,
-                )
-            })
-            .collect())
+        if state.mac_free {
+            // MAC-free: skip MAC computation entirely
+            Ok(a.iter()
+                .map(|my| SpdzPrimeFieldShare::new(*my, P::ScalarField::zero()))
+                .collect())
+        } else {
+            Ok(a.iter()
+                .zip(other_halves.iter())
+                .map(|(my, other)| {
+                    let full = *my + *other;
+                    SpdzPrimeFieldShare::new(*my, state.mac_key_share * full)
+                })
+                .collect())
+        }
     }
 
     fn mul<N: Network>(
@@ -205,7 +203,7 @@ impl<P: CurveGroup<BaseField: PrimeField>> NoirUltraHonkProver<P> for SpdzUltraH
         net: &N,
         _state: &mut Self::State,
     ) -> eyre::Result<Vec<P>> {
-        a.iter().map(|p| arithmetic::open_point(p, net)).collect()
+        arithmetic::open_point_many(a, net)
     }
 
     fn open_many<N: Network>(

@@ -695,14 +695,24 @@ impl<
             self.memory.masking_poly = Some(masking_poly);
         }
         // Compute first three wire commitments
+        let _t = std::time::Instant::now();
         self.execute_wire_commitments_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink wire_commitments: {:.1}s", _t.elapsed().as_secs_f64());
+
         // Compute sorted list accumulator and commitment
+        let _t = std::time::Instant::now();
         self.execute_sorted_list_accumulator_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink sorted_list_accum: {:.1}s", _t.elapsed().as_secs_f64());
 
         // Fiat-Shamir: beta & gamma
+        let _t = std::time::Instant::now();
         self.execute_log_derivative_inverse_round(transcript, proving_key)?;
+        eprintln!("PROFILE oink log_deriv_inverse: {:.1}s", _t.elapsed().as_secs_f64());
+
         // Compute grand product(s) and commitments.
+        let _t = std::time::Instant::now();
         self.execute_grand_product_computation_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink grand_product: {:.1}s", _t.elapsed().as_secs_f64());
 
         // Generate relation separators alphas for sumcheck/combiner computation
         self.generate_alphas_round(transcript);

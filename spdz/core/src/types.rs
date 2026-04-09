@@ -77,7 +77,12 @@ impl<F: PrimeField> SpdzPrimeFieldShare<F> {
     /// Both parties hold `mac_key_share * value` as their MAC component.
     pub fn promote_from_trivial(val: &F, mac_key_share: F, party_id: usize) -> Self {
         let share = if party_id == 0 { *val } else { F::zero() };
-        let mac = mac_key_share * val;
+        // MAC-free: skip multiplication when mac_key_share is zero
+        let mac = if mac_key_share.is_zero() {
+            F::zero()
+        } else {
+            mac_key_share * val
+        };
         Self { share, mac }
     }
 }
