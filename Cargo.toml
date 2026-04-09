@@ -47,7 +47,7 @@ ark-bls12-381 = "0.5"
 ark-bn254 = "0.5"
 ark-ec = { version = "0.5", default-features = false, features = ["parallel"] }
 ark-groth16 = { version = "0.5" }
-ark-ff = { version = "0.5", features = ["parallel"] }
+ark-ff = { version = "0.5", features = ["parallel", "asm"] }
 ark-grumpkin = "0.5"
 ark-poly = { version = "0.5", features = ["parallel"] }
 ark-relations = "0.5"
