@@ -26,39 +26,37 @@ use crate::{
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ProofType {
-    Plonk,
     Honk,
     Oink,
-    PG,
+    HN,
     Avm,
     RollupHonk,
     RootRollupHonk,
     HonkZk,
-    PgFinal,
-    PgTail,
+    HNFinal,
+    HNTail,
     Chonk,
 }
 
 impl From<u32> for ProofType {
     fn from(value: u32) -> Self {
         match value {
-            0 => ProofType::Plonk,
-            1 => ProofType::Honk,
-            2 => ProofType::Oink,
-            3 => ProofType::PG,
-            4 => ProofType::Avm,
-            5 => ProofType::RollupHonk,
-            6 => ProofType::RootRollupHonk,
-            7 => ProofType::HonkZk,
-            8 => ProofType::PgFinal,
-            9 => ProofType::PgTail,
-            10 => ProofType::Chonk,
+            0 => ProofType::Honk,
+            1 => ProofType::Oink,
+            2 => ProofType::HN,
+            3 => ProofType::Avm,
+            4 => ProofType::RollupHonk,
+            5 => ProofType::RootRollupHonk,
+            6 => ProofType::HonkZk,
+            7 => ProofType::HNFinal,
+            8 => ProofType::HNTail,
+            9 => ProofType::Chonk,
             _ => panic!("Invalid proof type"),
         }
     }
 }
 
-pub(crate) const _PROOF_TYPE_ROOT_ROLLUP_HONK: u32 = 6; //keep for reference
+pub(crate) const _PROOF_TYPE_ROOT_ROLLUP_HONK: u32 = 5; //keep for reference
 #[expect(dead_code)]
 pub struct ProgramMetadata {
     // The proof produced when this flag is true should be friendly for recursive verification

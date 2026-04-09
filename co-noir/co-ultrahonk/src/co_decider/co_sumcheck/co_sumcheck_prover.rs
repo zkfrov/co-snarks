@@ -414,7 +414,27 @@ impl<
         // evaluations of all witnesses are masked.
         let multivariate_evaluations =
             Self::extract_claimed_evaluations(self.net, self.state, partially_evaluated_polys)?;
-        Self::add_evals_to_transcript(transcript, &multivariate_evaluations);
+
+        // ZK: evaluate the masking polynomial at the sumcheck challenge and prepend to evaluations.
+        // In bb 4.2.0, the masking poly is the first entity (index 0) in AllEntities for ZK flavors.
+        {
+            let log_n = co_noir_common::utils::Utils::get_msb64(circuit_size as u64) as usize;
+            let masking_poly_eval_shared = self
+                .memory
+                .masking_poly
+                .as_ref()
+                .expect("ZK masking polynomial must be set by oink")
+                .evaluate_mle(&multivariate_challenge[..log_n]);
+            let masking_poly_eval =
+                T::open_many(&[masking_poly_eval_shared], self.net, self.state)?[0];
+            let all_evals: Vec<P::ScalarField> = std::iter::once(masking_poly_eval)
+                .chain(multivariate_evaluations.iter().copied())
+                .collect();
+            transcript.send_fr_iter_to_verifier::<P, _>(
+                "Sumcheck:evaluations".to_string(),
+                &all_evals,
+            );
+        }
 
         // The evaluations of Libra uninvariates at \f$ g_0(u_0), \ldots, g_{d-1} (u_{d-1}) \f$ are added to the
         // transcript.

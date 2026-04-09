@@ -23,6 +23,10 @@ pub(crate) struct RecursiveDeciderVerificationKey<
     pub(crate) relation_parameters: RelationParameters<FieldCT<C::ScalarField>>,
     pub(crate) target_sum: FieldCT<C::ScalarField>,
     pub(crate) witness_commitments: WitnessCommitments<C::ScalarField, T>,
+    /// ZK: Gemini masking polynomial commitment received in oink
+    pub(crate) gemini_masking_commitment: Option<BigGroup<C::ScalarField, T>>,
+    /// ZK: Gemini masking polynomial evaluation from sumcheck evaluations (index 0)
+    pub(crate) gemini_masking_poly_eval: Option<FieldCT<C::ScalarField>>,
 }
 
 pub(crate) struct VKAndHash<

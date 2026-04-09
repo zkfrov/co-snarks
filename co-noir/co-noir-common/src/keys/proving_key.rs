@@ -1,3 +1,4 @@
+use ark_ff::Zero;
 use crate::crs::ProverCrs;
 use crate::keys::plain_proving_key::PlainProvingKey;
 use crate::keys::types::ActiveRegionData;

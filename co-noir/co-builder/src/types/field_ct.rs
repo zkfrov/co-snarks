@@ -1122,12 +1122,10 @@ impl<F: PrimeField> FieldCT<F> {
             assert!((val.bits() as usize) < num_bits);
         } else {
             let index = self.get_witness_index(builder, driver);
-            // We have plookup
-            builder.decompose_into_default_range(
-                driver,
+            // Use create_limbed_range_constraint (matching bb's field_t::create_range_constraint)
+            let _ = builder.create_limbed_range_constraint(
                 index,
                 num_bits as u64,
-                None,
                 GenericUltraCircuitBuilder::<P, T>::DEFAULT_PLOOKUP_RANGE_BITNUM as u64,
             )?;
         }
@@ -1849,9 +1847,9 @@ impl<F: PrimeField> FieldCT<F> {
         // Component 2: Field validation against bn254 scalar field modulus
         Self::validate_split_in_field(&lo, &hi, lo_bits, &F::MODULUS.into(), builder, driver)?;
 
-        // Component 3: Range constraints (unless skipped)
+        // Component 3: Range constraints
         lo.create_range_constraint(lo_bits, builder, driver)?;
-        hi.create_range_constraint(254 - lo_bits, builder, driver)?;
+        hi.create_range_constraint(max_bits - lo_bits, builder, driver)?;
 
         Ok([lo, hi])
     }
@@ -1876,21 +1874,29 @@ impl<F: PrimeField> FieldCT<F> {
         let r_hi = Utils::slice_u256(field_modulus, lo_bits as u64, modulus_bits as u64);
 
         // Check if we need to borrow
+        // bb uses: need_borrow = lo > (r_lo - 1), i.e. lo >= r_lo
+        // This ensures value < modulus (strict), not value <= modulus
+        let r_lo_minus_one = if r_lo.is_zero() {
+            // If r_lo is 0, r_lo - 1 wraps to 2^lo_bits - 1
+            (BigUint::one() << lo_bits) - BigUint::one()
+        } else {
+            &r_lo - BigUint::one()
+        };
         let lo_value = lo.get_value(builder, driver);
         let borrow = if lo.is_constant() {
             let lo_value: BigUint = T::get_public(&lo_value)
                 .expect("Constants are public")
                 .into();
-            let need_borrow = lo_value > r_lo;
+            let need_borrow = lo_value > r_lo_minus_one;
             FieldCT::from(F::from(need_borrow as u64))
         } else {
             let need_borrow = if T::is_shared(&lo_value) {
-                driver.gt(lo_value.to_owned(), F::from(r_lo.clone()).into())?
+                driver.gt(lo_value.to_owned(), F::from(r_lo_minus_one.clone()).into())?
             } else {
                 let lo_big: BigUint = T::get_public(&lo_value)
                     .expect("Already checked it is public")
                     .into();
-                F::from((lo_big > r_lo) as u64).into()
+                F::from((lo_big > r_lo_minus_one) as u64).into()
             };
             FieldCT::from_witness(need_borrow, builder)
         };
@@ -1902,7 +1908,8 @@ impl<F: PrimeField> FieldCT<F> {
         }
 
         // Hi range check = r_hi - hi - borrow
-        // Lo range check = r_lo - lo + borrow * 2^lo_bits
+        // Lo range check = (r_lo - 1) - lo + borrow * 2^lo_bits
+        // (matching bb: value < modulus, i.e. value <= modulus - 1)
         let hi_diff = hi
             .neg()
             .add(&FieldCT::from(F::from(r_hi.clone())), builder, driver)
@@ -1910,7 +1917,7 @@ impl<F: PrimeField> FieldCT<F> {
         let shift = FieldCT::from(F::from(BigUint::one() << lo_bits));
         let lo_diff = lo
             .neg()
-            .add(&FieldCT::from(F::from(r_lo.clone())), builder, driver)
+            .add(&FieldCT::from(F::from(r_lo_minus_one)), builder, driver)
             .add(&borrow.multiply(&shift, builder, driver)?, builder, driver);
 
         hi_diff.create_range_constraint(hi_bits, builder, driver)?;
@@ -4082,11 +4089,10 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>> StrausScala
         }
 
         let index = scalar.get_witness_index(builder, driver);
-        let slice_indices = builder.decompose_into_default_range(
-            driver,
+        // Use create_limbed_range_constraint (matching bb's straus_scalar_slice)
+        let slice_indices = builder.create_limbed_range_constraint(
             index,
             num_bits as u64,
-            None,
             table_bits as u64,
         )?;
 

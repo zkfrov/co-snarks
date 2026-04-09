@@ -495,7 +495,6 @@ impl<
         tracing::trace!("generate alpha round");
 
         let alpha = transcript.get_challenge::<C>("alpha".to_string());
-        if std::env::var("TD").is_ok() { eprintln!("ALPHA: {:?}", alpha); }
         let mut alpha_powers = [C::ScalarField::one(); NUM_ALPHAS];
         alpha_powers[0] = alpha;
         for i in 1..NUM_ALPHAS {
@@ -681,6 +680,20 @@ impl<
 
         // Add circuit size public input size and public inputs to transcript
         Self::execute_preamble_round(transcript, proving_key, verifying_key)?;
+        // ZK: commit to Gemini masking polynomial (bb 4.2.0)
+        // The polynomial is stored and reused in shplemini for batching + evaluation
+        if self.has_zk == ZeroKnowledge::Yes {
+            use co_noir_common::polynomials::shared_polynomial::SharedPolynomial;
+            let poly_size = proving_key.circuit_size as usize;
+            let masking_poly = SharedPolynomial::<T, C>::random(poly_size, self.net, self.state)?;
+            let commitment_shared = CoUtils::commit::<T, C>(masking_poly.as_ref(), crs);
+            let commitment = T::open_point(commitment_shared, self.net, self.state)?;
+            transcript.send_point_to_verifier::<C>(
+                "Gemini:masking_poly_comm".to_string(),
+                commitment.into(),
+            );
+            self.memory.masking_poly = Some(masking_poly);
+        }
         // Compute first three wire commitments
         self.execute_wire_commitments_round(transcript, proving_key, crs)?;
         // Compute sorted list accumulator and commitment

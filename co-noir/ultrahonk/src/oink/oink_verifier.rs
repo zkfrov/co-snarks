@@ -6,6 +6,7 @@ use co_noir_common::{
     honk_curve::HonkCurve,
     honk_proof::TranscriptFieldType,
     transcript::{Transcript, TranscriptHasher},
+    types::ZeroKnowledge,
 };
 
 pub(crate) struct OinkVerifier<
@@ -16,25 +17,27 @@ pub(crate) struct OinkVerifier<
     pub public_inputs: Vec<P::ScalarField>,
     phantom_hasher: std::marker::PhantomData<H>,
     domain_separator: String,
+    has_zk: ZeroKnowledge,
 }
 
 impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>> Default
     for OinkVerifier<P, H>
 {
     fn default() -> Self {
-        Self::new("".to_string())
+        Self::new("".to_string(), ZeroKnowledge::No)
     }
 }
 
 impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>>
     OinkVerifier<C, H>
 {
-    pub(crate) fn new(domain_separator: String) -> Self {
+    pub(crate) fn new(domain_separator: String, has_zk: ZeroKnowledge) -> Self {
         Self {
             memory: VerifierMemory::default(),
             public_inputs: Default::default(),
             phantom_hasher: Default::default(),
             domain_separator,
+            has_zk,
         }
     }
 
@@ -145,6 +148,12 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
     ) -> HonkVerifyResult<VerifierMemory<C>> {
         tracing::trace!("Oink verify");
         self.execute_preamble_round(verifying_key, transcript)?;
+        // ZK: receive Gemini masking polynomial commitment (bb 4.2.0)
+        if self.has_zk == ZeroKnowledge::Yes {
+            let masking_comm =
+                transcript.receive_point_from_prover::<C>("Gemini:masking_poly_comm".to_string())?;
+            self.memory.gemini_masking_commitment = Some(masking_comm);
+        }
         self.execute_wire_commitments_round(transcript)?;
         self.execute_sorted_list_accumulator_round(transcript)?;
         self.execute_log_derivative_inverse_round(transcript)?;

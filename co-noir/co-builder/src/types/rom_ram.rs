@@ -292,7 +292,7 @@ pub(crate) struct RomRecord<F: Clone> {
 
 impl<F: PrimeField> RomRecord<F> {
     fn less_than(&self, other: &Self) -> bool {
-        self.index < other.index
+        self.index < other.index || (self.index == other.index && self.gate_index < other.gate_index)
     }
 
     fn equal(&self, other: &Self) -> bool {

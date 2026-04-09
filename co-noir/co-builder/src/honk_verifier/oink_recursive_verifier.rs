@@ -9,7 +9,7 @@ use ark_ff::Field;
 use co_acvm::mpc::NoirWitnessExtensionProtocol;
 
 use co_noir_common::constants::PERMUTATION_ARGUMENT_VALUE_SEPARATOR;
-use co_noir_common::types::RelationParameters;
+use co_noir_common::types::{RelationParameters, ZeroKnowledge};
 use co_noir_common::{
     honk_curve::HonkCurve,
     honk_proof::{HonkProofResult, TranscriptFieldType},
@@ -28,6 +28,7 @@ impl OinkRecursiveVerifier {
         transcript: &mut TranscriptCT<C, H>,
         builder: &mut GenericUltraCircuitBuilder<C, T>,
         driver: &mut T,
+        has_zk: ZeroKnowledge,
     ) -> HonkProofResult<()> {
         let vk_hash = verification_key
             .vk_and_hash
@@ -56,11 +57,34 @@ impl OinkRecursiveVerifier {
             .to_u64_digits()
             .first()
             .expect("Should fit into 64 bits") as usize;
+
+        // Assert that the VK's num_public_inputs matches the expected value (in-circuit constraint)
+        // This matches bb's: vk->num_public_inputs.assert_equal(FF(num_public_inputs))
+        verification_key
+            .vk_and_hash
+            .vk
+            .num_public_inputs
+            .assert_equal(
+                &FieldCT::from(C::ScalarField::from(num_public_inputs_usize as u64)),
+                builder,
+                driver,
+            );
+
         let mut public_inputs = Vec::with_capacity(num_public_inputs_usize);
 
         for i in 0..num_public_inputs_usize {
             let pi = transcript.receive_fr_from_prover(format!("public_input_{i}"))?;
             public_inputs.push(pi);
+        }
+
+        // ZK: receive Gemini masking polynomial commitment (bb 4.2.0)
+        if has_zk == ZeroKnowledge::Yes {
+            let masking_comm = transcript.receive_point_from_prover(
+                "Gemini:masking_poly_comm".to_owned(),
+                builder,
+                driver,
+            )?;
+            verification_key.gemini_masking_commitment = Some(masking_comm);
         }
 
         let mut commitments = WitnessCommitments::<C::ScalarField, T>::default();
@@ -74,6 +98,7 @@ impl OinkRecursiveVerifier {
         *commitments.w_o_mut() =
             transcript.receive_point_from_prover("W_O".to_owned(), builder, driver)?;
 
+
         // Get eta challenges: used in RAM/ROM memory records and log derivative lookup argument
         let [eta] = transcript
             .get_challenges(
@@ -86,6 +111,7 @@ impl OinkRecursiveVerifier {
         let eta_1 = eta.clone();
         let eta_2 = eta.multiply(&eta, builder, driver)?;
         let eta_3 = eta_2.multiply(&eta, builder, driver)?;
+
 
         // Get commitments to lookup argument polynomials and fourth wire
         *commitments.lookup_read_counts_mut() = transcript.receive_point_from_prover(
@@ -104,8 +130,14 @@ impl OinkRecursiveVerifier {
             .try_into()
             .unwrap();
 
+        // Compute beta powers immediately after challenge (matching bb's compute_beta_powers order)
+        let beta_sqr = beta.multiply(&beta, builder, driver)?;
+        let beta_cube = beta_sqr.multiply(&beta, builder, driver)?;
+
+
         *commitments.lookup_inverses_mut() =
             transcript.receive_point_from_prover("LOOKUP_INVERSES".to_owned(), builder, driver)?;
+
 
         // AZTEC TODO(https://github.com/AztecProtocol/barretenberg/issues/1283): Suspicious get_value().
         let public_input_delta = Self::compute_public_input_delta(
@@ -117,14 +149,13 @@ impl OinkRecursiveVerifier {
             driver,
         )?;
 
+
         // Get commitments to permutation and lookup grand products
         *commitments.z_perm_mut() =
             transcript.receive_point_from_prover("Z_PERM".to_owned(), builder, driver)?;
 
-        let alpha = transcript.get_challenge("alpha".to_string(), builder, driver)?;
 
-        let beta_sqr = beta.multiply(&beta, builder, driver)?;
-        let beta_cube = beta_sqr.multiply(&beta, builder, driver)?;
+        let alpha = transcript.get_challenge("alpha".to_string(), builder, driver)?;
         verification_key.relation_parameters = RelationParameters {
             beta,
             beta_sqr,

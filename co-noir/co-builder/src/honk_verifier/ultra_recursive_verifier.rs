@@ -55,7 +55,7 @@ impl UltraRecursiveVerifier {
 
         // No IPA accumulator on the UltraRecursiveFlavor
 
-        OinkRecursiveVerifier::verify(&mut key, &mut transcript, builder, driver)?;
+        OinkRecursiveVerifier::verify(&mut key, &mut transcript, builder, driver, has_zk)?;
 
         // Get the gate challenges for sumcheck computation
         key.gate_challenges = transcript.get_powers_of_challenge(
@@ -185,6 +185,8 @@ impl UltraRecursiveVerifier {
             &mut consistency_checked,
             libra_commitments,
             sumcheck_output.claimed_libra_evaluation.as_ref(),
+            key.gemini_masking_commitment.as_ref(),
+            sumcheck_output.gemini_masking_poly_eval.as_ref(),
             builder,
             driver,
         )?;

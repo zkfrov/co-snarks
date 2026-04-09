@@ -3,6 +3,7 @@ use crate::types_batch::AllEntitiesBatch;
 use ark_ec::{CurveGroup, PrimeGroup};
 use co_noir_common::constants::MAX_PARTIAL_RELATION_LENGTH;
 use co_noir_common::polynomials::entities::AllEntities;
+use co_noir_common::polynomials::shared_polynomial::SharedPolynomial;
 use co_noir_common::types::RelationParameters;
 use co_noir_common::{mpc::NoirUltraHonkProver, polynomials::entities::Polynomials};
 use itertools::izip;
@@ -14,6 +15,8 @@ pub(crate) struct ProverMemory<T: NoirUltraHonkProver<P>, P: CurveGroup> {
     pub(crate) relation_parameters: RelationParameters<P::ScalarField>,
     pub(crate) alphas: [P::ScalarField; NUM_ALPHAS],
     pub(crate) gate_challenges: Vec<P::ScalarField>,
+    /// ZK: Gemini masking polynomial from oink, used in shplemini
+    pub(crate) masking_poly: Option<SharedPolynomial<T, P>>,
 }
 
 pub(crate) type ProverUnivariates<T, P> = AllEntities<
@@ -86,6 +89,7 @@ impl<T: NoirUltraHonkProver<P>, P: CurveGroup> ProverMemory<T, P> {
             relation_parameters,
             alphas,
             gate_challenges,
+            masking_poly: prover_memory.masking_poly,
         }
     }
 }

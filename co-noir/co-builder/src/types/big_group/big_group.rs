@@ -109,10 +109,12 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         builder: &mut GenericUltraCircuitBuilder<P, T>,
         driver: &mut T,
     ) -> eyre::Result<()> {
-        // TACEO TODO: Has circuit failed
+        // If point is at infinity, x and y must be zero (matching bb's assert_zero_if approach)
+        self.x.assert_zero_if(&self.is_infinity, builder, driver)?;
+        self.y.assert_zero_if(&self.is_infinity, builder, driver)?;
 
         // Get curve parameters
-        let b = P::BaseField::from(3u64); // TACEO TODO: Magic constant BN254 curve b coefficient I think we have this in HonkCurve @Cesar199999
+        let b = P::BaseField::from(3u64);
         let adjusted_b = BigField::conditional_assign(
             &self.is_infinity,
             &mut BigField::default(),
@@ -120,35 +122,23 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             builder,
             driver,
         )?;
-        let mut adjusted_x = BigField::conditional_assign(
-            &self.is_infinity,
-            &mut BigField::default(),
-            &mut self.x.clone(),
-            builder,
-            driver,
-        )?;
-        let mut adjusted_y = BigField::conditional_assign(
-            &self.is_infinity,
-            &mut BigField::default(),
-            &mut self.y.clone(),
-            builder,
-            driver,
-        )?;
 
-        let x_sqr = adjusted_x.sqr(builder, driver)?;
-        let y_neg = adjusted_y.neg(builder, driver)?;
+        // Use original x, y (not conditionally assigned) — matching bb
+        let mut x = self.x.clone();
+        let mut y = self.y.clone();
+        let x_sqr = x.sqr(builder, driver)?;
+        let y_neg = y.neg(builder, driver)?;
 
         // Bn254G1::has_a == false
         BigField::mult_madd(
-            &mut [x_sqr, adjusted_y.clone()],
-            &mut [adjusted_x.clone(), y_neg],
+            &mut [x_sqr, y.clone()],
+            &mut [x.clone(), y_neg],
             &mut [adjusted_b],
             true,
             builder,
             driver,
         )?;
 
-        // TACEO TODO: has circuit_failed?
         Ok(())
     }
 
@@ -163,6 +153,18 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         let start_idx = self.x.set_public(driver, builder);
         self.y.set_public(driver, builder);
 
+        start_idx
+    }
+
+    /// Set 2 public inputs per Fq coordinate (lo/hi format) instead of 4 internal limbs.
+    /// Used for bb 4.2.0's pairing point accumulator format.
+    pub(crate) fn set_public_two_limbs<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(
+        &mut self,
+        driver: &mut T,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+    ) -> usize {
+        let start_idx = self.x.set_public_two_limbs(driver, builder);
+        self.y.set_public_two_limbs(driver, builder);
         start_idx
     }
 
@@ -361,7 +363,22 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             };
         }
 
-        Ok(accumulator)
+        accumulator.get_standard_form(builder, driver)
+    }
+
+    /// Enforce x and y coordinates of a point to be (0, 0) in the case of point at infinity.
+    /// Matches bb's element::get_standard_form().
+    pub(crate) fn get_standard_form<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(
+        &self,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+        driver: &mut T,
+    ) -> eyre::Result<Self> {
+        let is_infinity = self.is_infinity.clone();
+        let zero = BigField::default();
+        let mut result = self.clone();
+        result.x = BigField::conditional_assign(&is_infinity, &mut zero.clone(), &mut self.x.clone(), builder, driver)?;
+        result.y = BigField::conditional_assign(&is_infinity, &mut zero.clone(), &mut self.y.clone(), builder, driver)?;
+        Ok(result)
     }
 
     fn process_strauss_msm_rounds<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(
@@ -468,7 +485,8 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         }
 
         // Subtract the scaled offset generator
-        accumulator.sub(&mut offset_generator_end, builder, driver)
+        let result = accumulator.sub(&mut offset_generator_end, builder, driver)?;
+        Ok(result)
     }
 
     // Perform repeated iterations of the montgomery ladder algorithm.
@@ -509,7 +527,9 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             let mut lambda1_add = Vec::new();
 
             if i == 0 {
-                lambda1_add.push(self.y.neg(builder, driver)?);
+                // For non-element: don't push self.y yet — bb builds
+                // {-y1_prev, -y()} so y1_prev must come first.
+                // For element: lambda1_add is unused (div_without_denominator_check path).
             } else {
                 lambda1_left = previous_y.mul_left.clone();
                 lambda1_right = previous_y.mul_right.clone();
@@ -528,6 +548,10 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
                 } else {
                     add[i].y1_prev.neg(builder, driver)?
                 });
+                // For i==0: push -self.y AFTER y1_prev to match bb's {-y1_prev, -y()} order
+                if i == 0 {
+                    lambda1_add.push(self.y.neg(builder, driver)?);
+                }
             } else if i > 0 {
                 lambda1_add.push(if negate_add_y {
                     add[i].y3_prev.neg(builder, driver)?
@@ -559,9 +583,10 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
                     driver,
                 )?
             } else {
+                // Matching bb: lambda1 = (y() - y3_prev) / (x() - x3_prev)
                 BigField::div_without_denominator_check(
-                    &mut [add[i].y3_prev.sub(&mut self.y, builder, driver)?],
-                    &mut add[i].x3_prev.sub(&mut self.x, builder, driver)?,
+                    &mut [self.y.sub(&mut add[i].y3_prev, builder, driver)?],
+                    &mut self.x.sub(&mut add[i].x3_prev, builder, driver)?,
                     builder,
                     driver,
                 )?
@@ -576,6 +601,9 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
                 builder,
                 driver,
             )?;
+
+            // Assert x-coordinates are distinct for the second addition (matching bb)
+            previous_x.assert_is_not_equal(&x_3, builder, driver)?;
 
             // We can avoid computing y_4, instead substituting the expression `minus_lambda_2 * (x_4 - x) - y` where
             // needed. This is cheaper, because we can evaluate two field multiplications (or a field multiplication + a
@@ -940,9 +968,11 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             builder,
             driver,
         )?;
-        let mut lambda = BigField::div_without_denominator_check(
+        // Use division WITH denominator check, matching bb's operator/ in add_internal
+        let mut lambda = BigField::internal_div_pub(
             &mut [lambda_numerator],
             &mut lambda_denominator,
+            true,
             builder,
             driver,
         )?;
@@ -1082,9 +1112,11 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             driver,
         )?;
 
-        let mut lambda = BigField::div_without_denominator_check(
+        // Use division WITH denominator check, matching bb's operator/ in subtract_internal
+        let mut lambda = BigField::internal_div_pub(
             &mut [lambda_numerator],
             &mut lambda_denominator,
+            true,
             builder,
             driver,
         )?;
@@ -1167,25 +1199,37 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
     /// Doubles the point (i.e., computes 2P).
     /// This is the elliptic curve point doubling operation.
     /// Handles the point at infinity case.
+    /// Matches bb's dbl_internal: infinity-safe denominator + divisor non-zero check.
     pub(crate) fn dbl<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(
         &mut self,
         builder: &mut GenericUltraCircuitBuilder<P, T>,
         driver: &mut T,
     ) -> eyre::Result<Self> {
+        let is_infinity = self.is_infinity.clone();
+
+        // If the input is a point at infinity, use a safe denominator (1) to prevent division by zero.
+        let two_y = self.y.clone().add(&mut self.y.clone(), builder, driver)?;
+        let mut denominator = BigField::conditional_assign(
+            &is_infinity,
+            &mut BigField::from_constant(&BigUint::from(1u64)),
+            &mut two_y.clone(),
+            builder,
+            driver,
+        )?;
+
         // two_x = x + x
         let mut two_x = self.x.clone().add(&mut self.x.clone(), builder, driver)?;
 
-        // TODO(): handle y = 0 case.
-
         // neg_lambda = -((x * (two_x + x)) / (y + y))
+        // Curve equation when a = 0: y² = x³ + b
+        // msub_div with enable_divisor_nz_check=true, matching bb
         let three_x = two_x.clone().add(&mut self.x.clone(), builder, driver)?;
-        let denominator = self.y.clone().add(&mut self.y.clone(), builder, driver)?;
         let mut neg_lambda = BigField::msub_div(
             std::slice::from_ref(&self.x),
             &[three_x],
             &denominator,
             &[],
-            false,
+            true, // enable_divisor_nz_check, matching bb
             builder,
             driver,
         )?;
@@ -1203,8 +1247,7 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         )?;
 
         let mut result = BigGroup::new(x_3, y_3);
-        // Set point at infinity flag if input is at infinity
-        result.set_point_at_infinity(self.is_infinity.clone(), builder, driver);
+        result.set_point_at_infinity(is_infinity, builder, driver);
         Ok(result)
     }
 
@@ -1284,8 +1327,8 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         // To do this, we need to emulate a binary (or in our case quaternary) number system in Fr, so that we can
         // use the binary/quaternary basis to emulate arithmetic in Fq. Which is very messy. See bigfield.hpp for
         // the specifics.
-        let is_point_at_infinity = self.is_infinity.clone();
-        let mut result = Self::batch_mul(
+        // batch_mul handles infinity via get_standard_form, matching bb's scalar_mul
+        Self::batch_mul(
             std::slice::from_ref(self),
             std::slice::from_ref(scalar),
             max_num_bits,
@@ -1293,23 +1336,7 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
             &FieldCT::from(F::ONE),
             builder,
             driver,
-        )?;
-        result.x = BigField::conditional_assign(
-            &is_point_at_infinity,
-            &mut self.x,
-            &mut result.x,
-            builder,
-            driver,
-        )?;
-        result.y = BigField::conditional_assign(
-            &is_point_at_infinity,
-            &mut self.y,
-            &mut result.y,
-            builder,
-            driver,
-        )?;
-        result.set_point_at_infinity(is_point_at_infinity, builder, driver);
-        Ok(result)
+        )
     }
 
     /*
@@ -1439,17 +1466,44 @@ impl<F: PrimeField, T: NoirWitnessExtensionProtocol<F>> BigGroup<F, T> {
         Ok(BigGroup::new(x3, y3))
     }
 
-    pub(crate) fn reconstruct_from_public<P: CurveGroup<ScalarField = F>>(
+    pub(crate) fn reconstruct_from_public<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(
         limbs: &[FieldCT<F>],
         builder: &mut GenericUltraCircuitBuilder<P, T>,
         driver: &mut T,
     ) -> eyre::Result<Self> {
-        debug_assert_eq!(limbs.len(), 2 * crate::types::big_field::NUM_LIMBS);
-        Ok(BigGroup {
-            x: BigField::reconstruct_from_public(&limbs[0..4], builder, driver)?,
-            y: BigField::reconstruct_from_public(&limbs[4..8], builder, driver)?,
-            is_infinity: BoolCT::from(false),
-        })
+        if limbs.len() == 2 * crate::types::big_field::NUM_LIMBS {
+            // Old format: 4 limbs per Fq coordinate
+            Ok(BigGroup {
+                x: BigField::reconstruct_from_public(&limbs[0..4], builder, driver)?,
+                y: BigField::reconstruct_from_public(&limbs[4..8], builder, driver)?,
+                is_infinity: BoolCT::from(false),
+            })
+        } else {
+            // bb 4.2.0: pairing accumulator uses 2 Fr per Fq coordinate (lo/hi),
+            // total 4 Fr per point. Each lo/hi needs to be split into 2 x 68-bit limbs.
+            // Matches bb's deserialize_from_fields<Group>: construct + assert_is_in_field + validate_on_curve
+            debug_assert_eq!(limbs.len(), 4);
+            let x = BigField::construct_from_two_limbs::<P, T>(&limbs[0], &limbs[1], builder, driver)?;
+            x.assert_is_in_field(builder, driver)?;
+            let y = BigField::construct_from_two_limbs::<P, T>(&limbs[2], &limbs[3], builder, driver)?;
+            y.assert_is_in_field(builder, driver)?;
+
+            // 8-limb infinity detection, matching bb's element constructor
+            let mut limb_sum = FieldCT::from(F::zero());
+            for limb in x.binary_basis_limbs.iter().chain(y.binary_basis_limbs.iter()) {
+                limb_sum = limb_sum.add(&limb.element, builder, driver);
+            }
+            let is_infinity = limb_sum.is_zero(builder, driver)?;
+
+            // Directly assign is_infinity (no normalize), matching bb's constructor
+            let mut result = BigGroup {
+                x,
+                y,
+                is_infinity,
+            };
+            result.validate_on_curve(builder, driver)?;
+            Ok(result)
+        }
     }
 
     pub fn to_affine<P: CurveGroup<ScalarField = F, BaseField: PrimeField>>(

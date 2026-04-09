@@ -30,7 +30,7 @@ pub const BATCHED_RELATION_PARTIAL_LENGTH_ZK: usize = BATCHED_RELATION_PARTIAL_L
 pub const NUM_ALL_ENTITIES: usize =
     WITNESS_ENTITIES_SIZE + PRECOMPUTED_ENTITIES_SIZE + SHIFTED_WITNESS_ENTITIES_SIZE;
 
-pub const PUBLIC_INPUTS_SIZE: usize = 16;
+pub const PUBLIC_INPUTS_SIZE: usize = PAIRING_POINT_ACCUMULATOR_SIZE as usize;
 const NUM_FRS_FR: usize = 1;
 const NUM_FRS_COMM: usize = 4;
 
@@ -56,19 +56,17 @@ pub const DECIDER_PROOF_LENGTH_ZK: usize =
                /* 3. Libra sum */ (NUM_FRS_FR) +
                 /* 4. virtual_log_n sumcheck univariates */
 (CONST_PROOF_SIZE_LOG_N * BATCHED_RELATION_PARTIAL_LENGTH_ZK ) +
-               /* 5. NUM_ALL_ENTITIES sumcheck evaluations*/  (NUM_ALL_ENTITIES ) +
+               /* 5. NUM_ALL_ENTITIES + 1 (masking poly) sumcheck evaluations */  (NUM_ALL_ENTITIES + 1) +
                 /* 6. Libra claimed evaluation */ (NUM_FRS_FR) +
                /* 7. Libra grand sum commitment */ (NUM_FRS_COMM) +
                /* 8. Libra quotient commitment */ (NUM_FRS_COMM) +
-               /* 9. Gemini masking commitment */ (NUM_FRS_COMM) +
-               /* 10. Gemini masking evaluation */ (NUM_FRS_FR) +
-               /* 11. virtual_log_n - 1 Gemini Fold commitments */
+               /* 9. virtual_log_n - 1 Gemini Fold commitments */
                ((CONST_PROOF_SIZE_LOG_N - 1) * NUM_FRS_COMM) +
-               /* 12. virtual_log_n Gemini a evaluations */
+               /* 10. virtual_log_n Gemini a evaluations */
                (CONST_PROOF_SIZE_LOG_N * NUM_FRS_FR) +
-               /* 13. NUM_SMALL_IPA_EVALUATIONS libra evals */ (NUM_SMALL_IPA_EVALUATIONS * NUM_FRS_FR) +
-               /* 14. Shplonk Q commitment */ (NUM_FRS_COMM) +
-               /* 15. KZG W commitment */ (NUM_FRS_COMM);
+               /* 11. NUM_SMALL_IPA_EVALUATIONS libra evals */ (NUM_SMALL_IPA_EVALUATIONS * NUM_FRS_FR) +
+               /* 12. Shplonk Q commitment */ (NUM_FRS_COMM) +
+               /* 13. KZG W commitment */ (NUM_FRS_COMM);
 
 pub const OINK_PROOF_LENGTH_WITHOUT_PUB_INPUTS: usize = WITNESS_ENTITIES_SIZE * 4;
 

@@ -47,6 +47,8 @@ impl ShpleminiVerifier {
         consistency_checked: &mut bool,
         libra_commitments: Option<&[BigGroup<C::ScalarField, T>; NUM_LIBRA_COMMITMENTS]>,
         libra_univariate_evaluation: Option<&FieldCT<C::ScalarField>>,
+        gemini_masking_commitment: Option<&BigGroup<C::ScalarField, T>>,
+        gemini_masking_poly_eval: Option<&FieldCT<C::ScalarField>>,
         builder: &mut GenericUltraCircuitBuilder<C, T>,
         driver: &mut T,
     ) -> HonkProofResult<BatchOpeningClaim<C, T>> {
@@ -56,13 +58,13 @@ impl ShpleminiVerifier {
 
         let mut hiding_polynomial_commitment = BigGroup::default();
         if has_zk == ZeroKnowledge::Yes {
-            hiding_polynomial_commitment = transcript.receive_point_from_prover(
-                "Gemini:masking_poly_comm".to_string(),
-                builder,
-                driver,
-            )?;
-            batched_evaluation =
-                transcript.receive_fr_from_prover("Gemini:masking_poly_eval".to_owned())?;
+            // bb 4.2.0: masking poly commitment received in oink, eval from sumcheck evaluations
+            hiding_polynomial_commitment = gemini_masking_commitment
+                .expect("ZK masking poly commitment must be set by oink")
+                .clone();
+            batched_evaluation = gemini_masking_poly_eval
+                .expect("ZK masking poly eval must be set by sumcheck")
+                .clone();
         }
 
         // Get the challenge ρ to batch commitments to multilinear polynomials and their shifts
@@ -148,12 +150,14 @@ impl ShpleminiVerifier {
 
         // Compute 1/(z − r), 1/(z + r), 1/(z - r²),  1/(z + r²), … , 1/(z - r^{2^{d-1}}), 1/(z + r^{2^{d-1}})
         // These represent the denominators of the summand terms in Shplonk partially evaluated polynomial Q_z
+
         let inverse_vanishing_evals = ShpleminiVerifier::compute_inverted_gemini_denominators(
             &shplonk_evaluation_challenge,
             &gemini_eval_challenge_powers,
             builder,
             driver,
         )?;
+
 
         // Compute the additional factors to be multiplied with unshifted and shifted commitments when lazily
         // reconstructing the commitment of Q_z
@@ -164,6 +168,7 @@ impl ShpleminiVerifier {
             builder,
             driver,
         )?;
+
 
         if has_zk == ZeroKnowledge::Yes {
             commitments.push(hiding_polynomial_commitment);
@@ -194,6 +199,7 @@ impl ShpleminiVerifier {
             driver,
         )?;
 
+
         // Reconstruct Aᵢ(r²ⁱ) for i=0, ..., d - 1 from the batched evaluation of the multilinear polynomials and
         // Aᵢ(−r²ⁱ) for i = 0, ..., d - 1. In the case of interleaving, we compute A₀(r) as A₀₊(r) + P₊(r^s).
         let gemini_fold_pos_evaluations = Self::compute_fold_pos_evaluations(
@@ -205,6 +211,7 @@ impl ShpleminiVerifier {
             builder,
             driver,
         )?;
+
 
         // Place the commitments to Gemini fold polynomials Aᵢ in the vector of batch_mul commitments, compute the
         // contributions from Aᵢ(−r²ⁱ) for i=1, … , d − 1 to the constant term accumulator, add corresponding scalars
@@ -222,6 +229,7 @@ impl ShpleminiVerifier {
             builder,
             driver,
         )?;
+
 
         // Retrieve  the contribution without P₊(r^s)
         let a_0_pos = gemini_fold_pos_evaluations[0].clone();
@@ -370,9 +378,6 @@ impl ShpleminiVerifier {
         let evals = fold_neg_evals.to_vec();
         let mut eval_pos_prev = batched_evaluation.clone();
         let one = FieldCT::from(C::ScalarField::ONE);
-
-        let mut zero = FieldCT::from(C::ScalarField::ZERO);
-        zero.convert_constant_to_fixed_witness(builder, driver);
 
         let mut fold_pos_evaluations = Vec::with_capacity(virtual_log_n);
 

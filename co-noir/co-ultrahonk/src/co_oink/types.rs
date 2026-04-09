@@ -1,6 +1,7 @@
 use ark_ec::CurveGroup;
 use ark_ff::PrimeField;
 use co_noir_common::polynomials::polynomial::Polynomial;
+use co_noir_common::polynomials::shared_polynomial::SharedPolynomial;
 
 use co_noir_common::mpc::NoirUltraHonkProver;
 use ultrahonk::NUM_ALPHAS;
@@ -10,6 +11,8 @@ pub struct ProverMemory<T: NoirUltraHonkProver<P>, P: CurveGroup> {
     pub(crate) lookup_inverses: Polynomial<T::ArithmeticShare>, // column 5
     pub(crate) public_input_delta: P::ScalarField,
     pub(crate) challenges: Challenges<P::ScalarField>,
+    /// ZK: Gemini masking polynomial committed in oink, used in shplemini
+    pub(crate) masking_poly: Option<SharedPolynomial<T, P>>,
 }
 
 pub(crate) struct Challenges<F: PrimeField> {
@@ -46,6 +49,7 @@ impl<T: NoirUltraHonkProver<P>, P: CurveGroup> Default for ProverMemory<T, P> {
             lookup_inverses: Default::default(),
             public_input_delta: Default::default(),
             challenges: Default::default(),
+            masking_poly: None,
         }
     }
 }
