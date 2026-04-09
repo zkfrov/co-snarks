@@ -384,59 +384,73 @@ impl<
         // Step (1)
         // Populate `numerator` and `denominator` with the algebra described by Relation
 
-        // TACEO TODO could batch those 4 as well
-        let denom1 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_l(),
-            proving_key.polynomials.witness.w_r(),
-            proving_key.polynomials.precomputed.sigma_1(),
-            proving_key.polynomials.precomputed.sigma_2(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let denom2 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_o(),
-            &self.memory.w_4,
-            proving_key.polynomials.precomputed.sigma_3(),
-            proving_key.polynomials.precomputed.sigma_4(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let num1 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_l(),
-            proving_key.polynomials.witness.w_r(),
-            proving_key.polynomials.precomputed.id_1(),
-            proving_key.polynomials.precomputed.id_2(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let num2 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_o(),
-            &self.memory.w_4,
-            proving_key.polynomials.precomputed.id_3(),
-            proving_key.polynomials.precomputed.id_4(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
+        // Batch all 4 grand product num/denom computations + their pairwise products
+        // into fewer network rounds. Each batched_grand_product_num_denom prepares (mul1, mul2)
+        // pairs. We concatenate all pairs and do ONE mul_many, then split results.
+        let n = active_domain_size - 1;
+        let has_active_ranges = proving_key.active_region_data.size() > 0;
 
-        // TACEO TODO could batch here as well
-        let numerator = T::mul_many(&num1, &num2, self.net, self.state)?;
-        let denominator = T::mul_many(&denom1, &denom2, self.net, self.state)?;
+        // Prepare all 4 pairs of operands locally (no network)
+        let prepare = |shared1: &Polynomial<T::ArithmeticShare>,
+                       shared2: &Polynomial<T::ArithmeticShare>,
+                       pub1: &Polynomial<C::ScalarField>,
+                       pub2: &Polynomial<C::ScalarField>|
+         -> (Vec<T::ArithmeticShare>, Vec<T::ArithmeticShare>) {
+            let mut mul1 = Vec::with_capacity(n);
+            let mut mul2 = Vec::with_capacity(n);
+            let id = self.state.id();
+            for i in 0..n {
+                let idx = if has_active_ranges {
+                    proving_key.active_region_data.get_idx(i)
+                } else {
+                    i
+                };
+                mul1.push(T::add_with_public(pub1[idx] * self.memory.challenges.beta + self.memory.challenges.gamma, shared1[idx], id));
+                mul2.push(T::add_with_public(pub2[idx] * self.memory.challenges.beta + self.memory.challenges.gamma, shared2[idx], id));
+            }
+            (mul1, mul2)
+        };
+
+        let (d1_a, d1_b) = prepare(
+            proving_key.polynomials.witness.w_l(), proving_key.polynomials.witness.w_r(),
+            proving_key.polynomials.precomputed.sigma_1(), proving_key.polynomials.precomputed.sigma_2(),
+        );
+        let (d2_a, d2_b) = prepare(
+            proving_key.polynomials.witness.w_o(), &self.memory.w_4,
+            proving_key.polynomials.precomputed.sigma_3(), proving_key.polynomials.precomputed.sigma_4(),
+        );
+        let (n1_a, n1_b) = prepare(
+            proving_key.polynomials.witness.w_l(), proving_key.polynomials.witness.w_r(),
+            proving_key.polynomials.precomputed.id_1(), proving_key.polynomials.precomputed.id_2(),
+        );
+        let (n2_a, n2_b) = prepare(
+            proving_key.polynomials.witness.w_o(), &self.memory.w_4,
+            proving_key.polynomials.precomputed.id_3(), proving_key.polynomials.precomputed.id_4(),
+        );
+
+        // Concatenate all 4 pairs into one big mul_many call (1 network round instead of 4)
+        let mut all_a = Vec::with_capacity(4 * n);
+        let mut all_b = Vec::with_capacity(4 * n);
+        all_a.extend_from_slice(&d1_a); all_b.extend_from_slice(&d1_b);
+        all_a.extend_from_slice(&d2_a); all_b.extend_from_slice(&d2_b);
+        all_a.extend_from_slice(&n1_a); all_b.extend_from_slice(&n1_b);
+        all_a.extend_from_slice(&n2_a); all_b.extend_from_slice(&n2_b);
+        let all_results = T::mul_many(&all_a, &all_b, self.net, self.state)?;
+
+        // Split results back
+        let (denom1, rest) = all_results.split_at(n);
+        let (denom2, rest) = rest.split_at(n);
+        let (num1, num2) = rest.split_at(n);
+
+        // Batch the pairwise products too (1 round instead of 2)
+        let mut pair_a = Vec::with_capacity(2 * n);
+        let mut pair_b = Vec::with_capacity(2 * n);
+        pair_a.extend_from_slice(num1); pair_b.extend_from_slice(num2);
+        pair_a.extend_from_slice(denom1); pair_b.extend_from_slice(denom2);
+        let pair_results = T::mul_many(&pair_a, &pair_b, self.net, self.state)?;
+        let (numerator, denominator) = pair_results.split_at(n);
+        let numerator = numerator.to_vec();
+        let denominator = denominator.to_vec();
 
         // Step (2)
         // Compute the accumulating product of the numerator and denominator terms.
