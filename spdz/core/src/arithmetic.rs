@@ -211,16 +211,15 @@ fn mul_many_mac_free<F: PrimeField, N: Network>(
     net: &N,
     state: &mut SpdzState<F>,
 ) -> eyre::Result<Vec<SpdzPrimeFieldShare<F>>> {
+    use rayon::prelude::*;
     let n = xs.len();
     let (a_vec, b_vec, c_vec) = state.preprocessing.next_triple_batch(n)?;
 
-    // Compute masked differences — share component only
-    let mut eps_my = Vec::with_capacity(n);
-    let mut del_my = Vec::with_capacity(n);
-    for i in 0..n {
-        eps_my.push(xs[i].share - a_vec[i].share);
-        del_my.push(ys[i].share - b_vec[i].share);
-    }
+    // Compute masked differences — share component only (parallel)
+    let (eps_my, del_my): (Vec<F>, Vec<F>) = (0..n)
+        .into_par_iter()
+        .map(|i| (xs[i].share - a_vec[i].share, ys[i].share - b_vec[i].share))
+        .unzip();
 
     // Batch exchange share components in one round
     use crate::network::SpdzNetworkExt;
@@ -230,18 +229,20 @@ fn mul_many_mac_free<F: PrimeField, N: Network>(
     let received: Vec<F> = net.exchange_many(&to_send)?;
     let (eps_other, del_other) = received.split_at(n);
 
-    // Reconstruct opened values
-    let mut results = Vec::with_capacity(n);
-    for i in 0..n {
-        let eps = eps_my[i] + eps_other[i];
-        let del = del_my[i] + del_other[i];
-        // z.share = c.share + eps * b.share + del * a.share + (party_0_only: eps * del)
-        let mut z_share = c_vec[i].share + eps * b_vec[i].share + del * a_vec[i].share;
-        if state.id == 0 {
-            z_share += eps * del;
-        }
-        results.push(SpdzPrimeFieldShare::new(z_share, F::zero()));
-    }
+    // Reconstruct opened values (parallel)
+    let party_id = state.id;
+    let results: Vec<SpdzPrimeFieldShare<F>> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let eps = eps_my[i] + eps_other[i];
+            let del = del_my[i] + del_other[i];
+            let mut z_share = c_vec[i].share + eps * b_vec[i].share + del * a_vec[i].share;
+            if party_id == 0 {
+                z_share += eps * del;
+            }
+            SpdzPrimeFieldShare::new(z_share, F::zero())
+        })
+        .collect();
 
     Ok(results)
 }
@@ -439,15 +440,16 @@ pub fn msm_public_points<C: CurveGroup>(
     points: &[C::Affine],
     scalars: &[SpdzPrimeFieldShare<C::ScalarField>],
 ) -> SpdzPointShare<C> {
-    let shares: Vec<C::ScalarField> = scalars.iter().map(|s| s.share).collect();
+    use rayon::prelude::*;
+    let shares: Vec<C::ScalarField> = scalars.par_iter().map(|s| s.share).collect();
     let share = C::msm_unchecked(points, &shares);
 
-    // Skip MAC MSM if all MACs are zero (mac_free mode)
+    // Skip MAC MSM if MACs are zero (mac_free mode) — check first element only
     use ark_ff::Zero;
-    let mac = if scalars.first().is_some_and(|s| s.mac.is_zero()) && scalars.iter().all(|s| s.mac.is_zero()) {
+    let mac = if scalars.first().is_some_and(|s| s.mac.is_zero()) {
         C::zero()
     } else {
-        let macs: Vec<C::ScalarField> = scalars.iter().map(|s| s.mac).collect();
+        let macs: Vec<C::ScalarField> = scalars.par_iter().map(|s| s.mac).collect();
         C::msm_unchecked(points, &macs)
     };
 
@@ -464,17 +466,17 @@ pub fn fft<F: PrimeField>(
     data: &[SpdzPrimeFieldShare<F>],
     domain: &impl ark_poly::EvaluationDomain<F>,
 ) -> Vec<SpdzPrimeFieldShare<F>> {
-    let shares: Vec<F> = data.iter().map(|s| s.share).collect();
+    use rayon::prelude::*;
+    let shares: Vec<F> = data.par_iter().map(|s| s.share).collect();
     let fft_shares = domain.fft(&shares);
 
-    // Skip MAC FFT if MACs are all zero (mac_free mode)
     let mac_free = data.first().is_some_and(|s| s.mac.is_zero());
     if mac_free {
-        fft_shares.into_iter().map(|s| SpdzPrimeFieldShare::new(s, F::zero())).collect()
+        fft_shares.into_par_iter().map(|s| SpdzPrimeFieldShare::new(s, F::zero())).collect()
     } else {
-        let macs: Vec<F> = data.iter().map(|s| s.mac).collect();
+        let macs: Vec<F> = data.par_iter().map(|s| s.mac).collect();
         let fft_macs = domain.fft(&macs);
-        fft_shares.into_iter().zip(fft_macs).map(|(s, m)| SpdzPrimeFieldShare::new(s, m)).collect()
+        fft_shares.into_par_iter().zip(fft_macs).map(|(s, m)| SpdzPrimeFieldShare::new(s, m)).collect()
     }
 }
 
