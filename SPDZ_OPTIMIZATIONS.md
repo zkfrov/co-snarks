@@ -99,14 +99,27 @@ The sumcheck relation evaluation, Beaver local arithmetic, and FFT/IFFT are sing
 
 ---
 
-## Performance Targets
+## Benchmark Results
 
-| Mode | Current | After MAC-free | After all opts |
-|------|---------|---------------|---------------|
-| Full MAC (LocalNetwork) | 243s | — | — |
-| MAC-free (LocalNetwork) | TBD | ~150-170s? | ~120-140s? |
-| MAC-free (LAN, 0.1ms) | — | ~170-200s? | ~140-160s? |
-| MAC-free (Internet, 50ms) | — | ~10-20min? | ~5-10min? |
+| Optimization | Proving time | Change |
+|-------------|-------------|--------|
+| Baseline (full MAC) | 242.7s | — |
+| + MAC-free | 184.4s | -24% |
+| + Grand product batch | 182.9s | -1% (helps on real networks) |
+| + Rayon parallelism | **157.7s** | **-35% total** |
+| ~~+ Sumcheck edge parallel~~ | ~~174.8s~~ | ~~REVERTED — merge overhead too high~~ |
+
+### Phase breakdown (best: 157.7s)
+
+| Phase | Baseline | Best |
+|-------|----------|------|
+| wire_commitments | 12.6s | 3.1s |
+| sorted_list_accum | 5.6s | 2.0s |
+| grand_product | 30.0s | 20.0s |
+| **oink total** | **51.4s** | **27.1s** |
+| sumcheck | 166.2s | 102.1s |
+| pcs/shplemini | 25.0s | 28.2s |
+| **decider total** | **191.3s** | **130.5s** |
 
 ---
 
