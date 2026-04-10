@@ -4346,6 +4346,7 @@ dependencies = [
  "ocelot",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "rayon",
  "scuttlebutt",
  "serde",
  "sha2 0.10.9",

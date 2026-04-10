@@ -423,8 +423,25 @@ impl<'a, F: PrimeField, N: Network> NoirWitnessExtensionProtocol<F>
     }
 
     fn sort(&mut self, inputs: &[Self::AcvmType], bitsize: usize) -> eyre::Result<Vec<Self::ArithmeticShare>> {
-        let shares: Vec<SpdzPrimeFieldShare<F>> = inputs.iter().map(|v| self.get_as_shared(v)).collect();
-        spdz_core::gadgets::bits::sort(&shares, bitsize, self.net, &mut self.state)
+        // If all inputs are public, sort locally without MPC (same as plain solver)
+        let all_public = inputs.iter().all(|v| matches!(v, SpdzAcvmType::Public(_)));
+        if all_public {
+            let mut values: Vec<F> = inputs.iter().map(|v| match v {
+                SpdzAcvmType::Public(f) => *f,
+                _ => unreachable!(),
+            }).collect();
+            // Sort by value (matching plain solver's sort by uint representation)
+            values.sort_by(|a, b| {
+                let a_big: num_bigint::BigUint = (*a).into();
+                let b_big: num_bigint::BigUint = (*b).into();
+                a_big.cmp(&b_big)
+            });
+            // Return as trivial shares (party 0 holds value, party 1 holds 0)
+            Ok(values.into_iter().map(|v| self.promote_to_trivial_share(v)).collect())
+        } else {
+            let shares: Vec<SpdzPrimeFieldShare<F>> = inputs.iter().map(|v| self.get_as_shared(v)).collect();
+            spdz_core::gadgets::bits::sort(&shares, bitsize, self.net, &mut self.state)
+        }
     }
 
     fn sort_vec_by(&mut self, key: &[Self::AcvmType], inputs: Vec<&[Self::ArithmeticShare]>, bitsize: usize) -> eyre::Result<Vec<Vec<Self::ArithmeticShare>>> {
@@ -1105,34 +1122,36 @@ impl<'a, F: PrimeField, N: Network> NoirWitnessExtensionProtocol<F>
     fn compute_naf_entries(&mut self, scalar: &Self::AcvmType, max_num_bits: usize) -> eyre::Result<Vec<Self::AcvmType>> {
         // Only public values supported (same as Rep3)
         if let Some(scalar_public) = Self::get_public(scalar) {
-            // NAF: non-adjacent form decomposition
-            let scalar_big: num_bigint::BigUint = scalar_public.into();
-            let mut naf = Vec::with_capacity(max_num_bits + 1);
-            let mut k = scalar_big.clone();
-            let zero = num_bigint::BigUint::from(0u64);
-            let one = num_bigint::BigUint::from(1u64);
-            let two = num_bigint::BigUint::from(2u64);
-            while k > zero {
-                if &k % &two == one {
-                    // k is odd
-                    let ki = if &k % num_bigint::BigUint::from(4u64) == num_bigint::BigUint::from(3u64) {
-                        k += &one;
-                        F::zero() - F::one() // -1
-                    } else {
-                        k -= &one;
-                        F::one() // 1
-                    };
-                    naf.push(SpdzAcvmType::Public(ki));
+            // Match the plain solver's implementation exactly:
+            // Extract bits of the scalar (inverted: 0-bit → F::one(), 1-bit → F::zero())
+            use ark_ff::Zero as _;
+            use num_bigint::BigUint;
+            let mut scalar_multiplier: BigUint = scalar_public.into();
+            let is_zero = scalar_public == F::zero();
+
+            let num_rounds = if max_num_bits == 0 || is_zero {
+                F::MODULUS_BIT_SIZE as usize
+            } else {
+                max_num_bits
+            };
+
+            // NAF can't handle 0 so we set scalar = r in this case.
+            if is_zero {
+                scalar_multiplier = F::MODULUS.into();
+            }
+
+            let mut bits = Vec::with_capacity(num_rounds);
+            for _ in 0..num_rounds {
+                let bit = if (&scalar_multiplier & BigUint::one()).is_zero() {
+                    F::one()
                 } else {
-                    naf.push(SpdzAcvmType::Public(F::zero()));
-                }
-                k >>= 1;
+                    F::zero()
+                };
+                bits.push(SpdzAcvmType::Public(bit));
+                scalar_multiplier >>= 1;
             }
-            // Pad to max_num_bits + 1
-            while naf.len() < max_num_bits + 1 {
-                naf.push(SpdzAcvmType::Public(F::zero()));
-            }
-            Ok(naf)
+
+            Ok(bits)
         } else {
             not_supported!(compute_naf_entries_shared)
         }

@@ -200,14 +200,19 @@ where
         let [y_lo, y_hi] = [&elements[2], &elements[3]];
 
         let x = BigField::from_slices(x_lo, x_hi, driver, builder)?;
+        x.assert_is_in_field(builder, driver)?;
         let y = BigField::from_slices(y_lo, y_hi, driver, builder)?;
-        let is_zero = FieldCT::check_point_at_infinity::<C, WT>(&elements, builder, driver)?;
+        y.assert_is_in_field(builder, driver)?;
+
+        // Detect infinity by summing all 8 BigField limbs (matching bb's element constructor)
+        let mut limb_sum = FieldCT::from(C::ScalarField::zero());
+        for limb in x.binary_basis_limbs.iter().chain(y.binary_basis_limbs.iter()) {
+            limb_sum = limb_sum.add(&limb.element, builder, driver);
+        }
+        let is_zero = limb_sum.is_zero(builder, driver)?;
 
         let mut result = BigGroup::new(x, y);
-
         result.set_point_at_infinity(is_zero, builder, driver);
-        // Note that in the case of bn254 with Mega arithmetization, the check is delegated to ECCVM, see
-        // `on_curve_check` in `ECCVMTranscriptRelationImpl`.
         result.validate_on_curve(builder, driver)?;
         Ok(result)
     }

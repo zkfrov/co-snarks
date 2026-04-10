@@ -384,68 +384,83 @@ impl<
         // Step (1)
         // Populate `numerator` and `denominator` with the algebra described by Relation
 
-        // TACEO TODO could batch those 4 as well
-        let denom1 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_l(),
-            proving_key.polynomials.witness.w_r(),
-            proving_key.polynomials.precomputed.sigma_1(),
-            proving_key.polynomials.precomputed.sigma_2(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let denom2 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_o(),
-            &self.memory.w_4,
-            proving_key.polynomials.precomputed.sigma_3(),
-            proving_key.polynomials.precomputed.sigma_4(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let num1 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_l(),
-            proving_key.polynomials.witness.w_r(),
-            proving_key.polynomials.precomputed.id_1(),
-            proving_key.polynomials.precomputed.id_2(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
-        let num2 = Self::batched_grand_product_num_denom(
-            self.net,
-            self.state,
-            proving_key.polynomials.witness.w_o(),
-            &self.memory.w_4,
-            proving_key.polynomials.precomputed.id_3(),
-            proving_key.polynomials.precomputed.id_4(),
-            &self.memory.challenges.beta,
-            &self.memory.challenges.gamma,
-            active_domain_size - 1,
-            &proving_key.active_region_data,
-        )?;
+        // Batch all 4 grand product num/denom computations + their pairwise products
+        // into fewer network rounds. Each batched_grand_product_num_denom prepares (mul1, mul2)
+        // pairs. We concatenate all pairs and do ONE mul_many, then split results.
+        let n = active_domain_size - 1;
+        let has_active_ranges = proving_key.active_region_data.size() > 0;
 
-        // TACEO TODO could batch here as well
-        let numerator = T::mul_many(&num1, &num2, self.net, self.state)?;
-        let denominator = T::mul_many(&denom1, &denom2, self.net, self.state)?;
+        // Prepare all 4 pairs of operands locally (no network)
+        let prepare = |shared1: &Polynomial<T::ArithmeticShare>,
+                       shared2: &Polynomial<T::ArithmeticShare>,
+                       pub1: &Polynomial<C::ScalarField>,
+                       pub2: &Polynomial<C::ScalarField>|
+         -> (Vec<T::ArithmeticShare>, Vec<T::ArithmeticShare>) {
+            let mut mul1 = Vec::with_capacity(n);
+            let mut mul2 = Vec::with_capacity(n);
+            let id = self.state.id();
+            for i in 0..n {
+                let idx = if has_active_ranges {
+                    proving_key.active_region_data.get_idx(i)
+                } else {
+                    i
+                };
+                mul1.push(T::add_with_public(pub1[idx] * self.memory.challenges.beta + self.memory.challenges.gamma, shared1[idx], id));
+                mul2.push(T::add_with_public(pub2[idx] * self.memory.challenges.beta + self.memory.challenges.gamma, shared2[idx], id));
+            }
+            (mul1, mul2)
+        };
+
+        let (d1_a, d1_b) = prepare(
+            proving_key.polynomials.witness.w_l(), proving_key.polynomials.witness.w_r(),
+            proving_key.polynomials.precomputed.sigma_1(), proving_key.polynomials.precomputed.sigma_2(),
+        );
+        let (d2_a, d2_b) = prepare(
+            proving_key.polynomials.witness.w_o(), &self.memory.w_4,
+            proving_key.polynomials.precomputed.sigma_3(), proving_key.polynomials.precomputed.sigma_4(),
+        );
+        let (n1_a, n1_b) = prepare(
+            proving_key.polynomials.witness.w_l(), proving_key.polynomials.witness.w_r(),
+            proving_key.polynomials.precomputed.id_1(), proving_key.polynomials.precomputed.id_2(),
+        );
+        let (n2_a, n2_b) = prepare(
+            proving_key.polynomials.witness.w_o(), &self.memory.w_4,
+            proving_key.polynomials.precomputed.id_3(), proving_key.polynomials.precomputed.id_4(),
+        );
+
+        // Concatenate all 4 pairs into one big mul_many call (1 network round instead of 4)
+        let mut all_a = Vec::with_capacity(4 * n);
+        let mut all_b = Vec::with_capacity(4 * n);
+        all_a.extend_from_slice(&d1_a); all_b.extend_from_slice(&d1_b);
+        all_a.extend_from_slice(&d2_a); all_b.extend_from_slice(&d2_b);
+        all_a.extend_from_slice(&n1_a); all_b.extend_from_slice(&n1_b);
+        all_a.extend_from_slice(&n2_a); all_b.extend_from_slice(&n2_b);
+        let all_results = T::mul_many(&all_a, &all_b, self.net, self.state)?;
+
+        // Split results back
+        let (denom1, rest) = all_results.split_at(n);
+        let (denom2, rest) = rest.split_at(n);
+        let (num1, num2) = rest.split_at(n);
+
+        // Batch the pairwise products too (1 round instead of 2)
+        let mut pair_a = Vec::with_capacity(2 * n);
+        let mut pair_b = Vec::with_capacity(2 * n);
+        pair_a.extend_from_slice(num1); pair_b.extend_from_slice(num2);
+        pair_a.extend_from_slice(denom1); pair_b.extend_from_slice(denom2);
+        let pair_results = T::mul_many(&pair_a, &pair_b, self.net, self.state)?;
+        let (numerator, denominator) = pair_results.split_at(n);
+        let numerator = numerator.to_vec();
+        let denominator = denominator.to_vec();
 
         // Step (2)
         // Compute the accumulating product of the numerator and denominator terms.
 
-        // TACEO TODO could batch here as well
-        // Do the multiplications of num[i] * num[i-1] and den[i] * den[i-1] in constant rounds
-        let numerator = CoUtils::array_prod_mul::<T, C, N>(self.net, self.state, &numerator)?;
-        let mut denominator =
-            CoUtils::array_prod_mul::<T, C, N>(self.net, self.state, &denominator)?;
+        // Batch both prefix products in one call (halves network rounds)
+        let mut prod_results = CoUtils::array_prod_inner_mul_many::<T, C, N>(
+            self.net, self.state, &[numerator, denominator],
+        )?;
+        let mut denominator = prod_results.pop().unwrap();
+        let numerator = prod_results.pop().unwrap();
 
         // invert denominator
         CoUtils::batch_invert::<T, C, N>(&mut denominator, self.net, self.state)?;
@@ -495,7 +510,6 @@ impl<
         tracing::trace!("generate alpha round");
 
         let alpha = transcript.get_challenge::<C>("alpha".to_string());
-        if std::env::var("TD").is_ok() { eprintln!("ALPHA: {:?}", alpha); }
         let mut alpha_powers = [C::ScalarField::one(); NUM_ALPHAS];
         alpha_powers[0] = alpha;
         for i in 1..NUM_ALPHAS {
@@ -547,9 +561,12 @@ impl<
             self.mask_polynomial(proving_key.polynomials.witness.w_o_mut())?;
         };
 
-        let w_l = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_l().as_ref(), crs);
-        let w_r = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_r().as_ref(), crs);
-        let w_o = CoUtils::commit::<T, C>(proving_key.polynomials.witness.w_o().as_ref(), crs);
+        // Truncate to active trace size — trailing zeros don't affect the commitment
+        // but Pippenger still processes them. Skipping saves ~30% MSM work.
+        let active = proving_key.final_active_wire_idx + 1;
+        let w_l = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_l().as_ref()[..active], crs);
+        let w_r = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_r().as_ref()[..active], crs);
+        let w_o = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_o().as_ref()[..active], crs);
 
         let open = T::open_point_many(&[w_l, w_r, w_o], self.net, self.state)?;
 
@@ -587,19 +604,16 @@ impl<
         };
 
         // Commit to lookup argument polynomials and the finalized (i.e. with memory records) fourth wire polynomial
+        let active = proving_key.final_active_wire_idx + 1;
         let lookup_read_counts = CoUtils::commit::<T, C>(
-            proving_key
-                .polynomials
-                .witness
-                .lookup_read_counts()
-                .as_ref(),
+            &proving_key.polynomials.witness.lookup_read_counts().as_ref()[..active],
             crs,
         );
         let lookup_read_tags = CoUtils::commit::<T, C>(
-            proving_key.polynomials.witness.lookup_read_tags().as_ref(),
+            &proving_key.polynomials.witness.lookup_read_tags().as_ref()[..active],
             crs,
         );
-        let w_4 = CoUtils::commit::<T, C>(self.memory.w_4.as_ref(), crs);
+        let w_4 = CoUtils::commit::<T, C>(&self.memory.w_4.as_ref()[..active], crs);
         let opened = T::open_point_many(
             &[lookup_read_counts, lookup_read_tags, w_4],
             self.net,
@@ -659,9 +673,10 @@ impl<
         };
 
         // This is from the previous round, but we open it here with z_perm
-        let lookup_inverses = CoUtils::commit::<T, C>(self.memory.lookup_inverses.as_ref(), crs);
+        let active = proving_key.final_active_wire_idx + 1;
+        let lookup_inverses = CoUtils::commit::<T, C>(&self.memory.lookup_inverses.as_ref()[..active], crs);
 
-        let z_perm = CoUtils::commit::<T, C>(self.memory.z_perm.as_ref(), crs);
+        let z_perm = CoUtils::commit::<T, C>(&self.memory.z_perm.as_ref()[..active], crs);
 
         let open = T::open_point_many(&[lookup_inverses, z_perm], self.net, self.state)?;
 
@@ -681,15 +696,39 @@ impl<
 
         // Add circuit size public input size and public inputs to transcript
         Self::execute_preamble_round(transcript, proving_key, verifying_key)?;
+        // ZK: commit to Gemini masking polynomial (bb 4.2.0)
+        // The polynomial is stored and reused in shplemini for batching + evaluation
+        if self.has_zk == ZeroKnowledge::Yes {
+            use co_noir_common::polynomials::shared_polynomial::SharedPolynomial;
+            let poly_size = proving_key.circuit_size as usize;
+            let masking_poly = SharedPolynomial::<T, C>::random(poly_size, self.net, self.state)?;
+            let commitment_shared = CoUtils::commit::<T, C>(masking_poly.as_ref(), crs);
+            let commitment = T::open_point(commitment_shared, self.net, self.state)?;
+            transcript.send_point_to_verifier::<C>(
+                "Gemini:masking_poly_comm".to_string(),
+                commitment.into(),
+            );
+            self.memory.masking_poly = Some(masking_poly);
+        }
         // Compute first three wire commitments
+        let _t = std::time::Instant::now();
         self.execute_wire_commitments_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink wire_commitments: {:.1}s", _t.elapsed().as_secs_f64());
+
         // Compute sorted list accumulator and commitment
+        let _t = std::time::Instant::now();
         self.execute_sorted_list_accumulator_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink sorted_list_accum: {:.1}s", _t.elapsed().as_secs_f64());
 
         // Fiat-Shamir: beta & gamma
+        let _t = std::time::Instant::now();
         self.execute_log_derivative_inverse_round(transcript, proving_key)?;
+        eprintln!("PROFILE oink log_deriv_inverse: {:.1}s", _t.elapsed().as_secs_f64());
+
         // Compute grand product(s) and commitments.
+        let _t = std::time::Instant::now();
         self.execute_grand_product_computation_round(transcript, proving_key, crs)?;
+        eprintln!("PROFILE oink grand_product: {:.1}s", _t.elapsed().as_secs_f64());
 
         // Generate relation separators alphas for sumcheck/combiner computation
         self.generate_alphas_round(transcript);

@@ -116,11 +116,18 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
         builder: &mut GenericUltraCircuitBuilder<C, T>,
         driver: &mut T,
     ) -> HonkProofResult<()> {
+        // Total number of powers needed (matching bb: skip last rho_power *= rho to avoid unnecessary gate)
+        let num_powers =
+            self.unshifted.commitments.len() + self.shifted.commitments.len();
+        let mut power_idx = 0usize;
+
         // Append the commitments/scalars from a given batch to the corresponding containers; update the batched
         // evaluation and the running batching challenge in place
-        // TACEO TODO: Batch multiplications
         let mut aggregate_claim_data_and_update_batched_evaluation =
-            |batch: &Batch<C, T>, rho_power: &mut FieldCT<C::ScalarField>| -> HonkProofResult<()> {
+            |batch: &Batch<C, T>,
+             rho_power: &mut FieldCT<C::ScalarField>,
+             power_idx: &mut usize|
+             -> HonkProofResult<()> {
                 for (commitment, evaluation) in
                     izip!(batch.commitments.iter(), batch.evaluations.iter())
                 {
@@ -131,7 +138,10 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
                         builder,
                         driver,
                     );
-                    *rho_power = rho_power.multiply(rho, builder, driver)?;
+                    *power_idx += 1;
+                    if *power_idx < num_powers {
+                        *rho_power = rho_power.multiply(rho, builder, driver)?;
+                    }
                 }
                 HonkProofResult::Ok(())
             };
@@ -140,10 +150,18 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
         // scalars for the batch mul
 
         // i-th Unshifted commitment will be multiplied by ρ^i and (1/(z−r) + ν/(z+r))
-        aggregate_claim_data_and_update_batched_evaluation(&mut self.unshifted, rho_power)?;
+        aggregate_claim_data_and_update_batched_evaluation(
+            &mut self.unshifted,
+            rho_power,
+            &mut power_idx,
+        )?;
 
         // i-th shifted commitments will be multiplied by p^{k+i} and r⁻¹ ⋅ (1/(z−r) − ν/(z+r))
-        aggregate_claim_data_and_update_batched_evaluation(&mut self.shifted, rho_power)?;
+        aggregate_claim_data_and_update_batched_evaluation(
+            &mut self.shifted,
+            rho_power,
+            &mut power_idx,
+        )?;
 
         Ok(())
     }

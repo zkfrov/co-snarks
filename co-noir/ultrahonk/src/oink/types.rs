@@ -12,12 +12,16 @@ pub(crate) struct ProverMemory<P: CurveGroup> {
     pub(crate) lookup_inverses: Polynomial<P::ScalarField>,
     pub(crate) public_input_delta: P::ScalarField,
     pub(crate) challenges: Challenges<P::ScalarField>,
+    /// ZK: Gemini masking polynomial committed in oink, used in shplemini
+    pub(crate) masking_poly: Option<Polynomial<P::ScalarField>>,
 }
 
 pub(crate) struct VerifierMemory<P: CurveGroup> {
     pub(crate) public_input_delta: P::ScalarField,
     pub(crate) witness_commitments: WitnessEntities<P::Affine>,
     pub(crate) challenges: Challenges<P::ScalarField>,
+    /// ZK: Gemini masking polynomial commitment received in oink, used in shplemini
+    pub(crate) gemini_masking_commitment: Option<P::Affine>,
 }
 
 pub(crate) struct Challenges<F: PrimeField> {
@@ -54,6 +58,7 @@ impl<P: CurveGroup> Default for ProverMemory<P> {
             lookup_inverses: Default::default(),
             public_input_delta: Default::default(),
             challenges: Default::default(),
+            masking_poly: None,
         }
     }
 }
@@ -64,6 +69,7 @@ impl<P: CurveGroup> Default for VerifierMemory<P> {
             public_input_delta: Default::default(),
             witness_commitments: Default::default(),
             challenges: Default::default(),
+            gemini_masking_commitment: None,
         }
     }
 }

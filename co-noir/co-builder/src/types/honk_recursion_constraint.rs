@@ -78,15 +78,17 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
             let [y_lo, y_hi] = [&src[2], &src[3]];
 
             let x = BigField::from_slices(x_lo, x_hi, driver, builder)?;
+            x.assert_is_in_field(builder, driver)?;
             let y = BigField::from_slices(y_lo, y_hi, driver, builder)?;
-            let is_zero = FieldCT::check_point_at_infinity::<C, T>(src, builder, driver)?;
-
+            y.assert_is_in_field(builder, driver)?;
+            // Detect infinity by summing all 8 BigField limbs (matching bb's element constructor)
+            let mut limb_sum = FieldCT::<C::ScalarField>::from(C::ScalarField::zero());
+            for limb in x.binary_basis_limbs.iter().chain(y.binary_basis_limbs.iter()) {
+                limb_sum = limb_sum.add(&limb.element, builder, driver);
+            }
+            let is_zero = limb_sum.is_zero(builder, driver)?;
             let mut result = BigGroup::new(x, y);
-
             result.set_point_at_infinity(is_zero, builder, driver);
-
-            // Note that in the case of bn254 with Mega arithmetization, the check is delegated to ECCVM, see
-            // `on_curve_check` in `ECCVMTranscriptRelationImpl`.
             result.validate_on_curve(builder, driver)?;
             *des = result;
         }
@@ -277,6 +279,8 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
             witness_commitments: Default::default(),
             alphas: array::from_fn(|_| FieldCT::<C::ScalarField>::default()),
             gate_challenges: Vec::new(),
+            gemini_masking_commitment: None,
+            gemini_masking_poly_eval: None,
         };
 
         UltraRecursiveVerifier::verify_proof::<C, Poseidon2SpongeCT<C>, T>(

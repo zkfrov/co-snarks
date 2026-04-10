@@ -52,22 +52,15 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         let n = 1 << log_n;
         let mut batched_unshifted = Polynomial::new_zero(n); // batched unshifted polynomials
 
-        // To achieve ZK, we mask the batched polynomial by a random polynomial of the same size
+        // To achieve ZK, use the masking polynomial created and committed during oink.
+        // In bb 4.2.0, the masking poly evaluation is no longer sent separately —
+        // it's included in the sumcheck evaluations (index 0 of AllEntities).
         if self.has_zk == ZeroKnowledge::Yes {
-            batched_unshifted = Polynomial::<P::ScalarField>::random(n, &mut self.rng);
-            let masking_poly_comm = Utils::commit(&batched_unshifted.coefficients, commitment_key)?;
-            transcript.send_point_to_verifier::<P>(
-                "Gemini:masking_poly_comm".to_string(),
-                masking_poly_comm.into(),
-            );
-            // In the provers, the size of multilinear_challenge is `virtual_log_n`, but we need to evaluate the
-            // hiding polynomial as multilinear in log_n variables
-            let masking_poly_eval =
-                batched_unshifted.evaluate_mle(&multilinear_challenge[0..log_n]);
-            transcript.send_fr_to_verifier::<P>(
-                "Gemini:masking_poly_eval".to_string(),
-                masking_poly_eval,
-            );
+            batched_unshifted = self
+                .memory
+                .masking_poly
+                .take()
+                .expect("ZK masking polynomial must be set by oink");
         }
 
         // Generate batching challenge \rho and powers 1,...,\rho^{m-1}

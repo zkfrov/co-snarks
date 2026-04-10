@@ -566,6 +566,18 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
 
         // Add circuit size public input size and public inputs to transcript
         self.execute_preamble_round(transcript, proving_key, verifying_key)?;
+        // ZK: commit to Gemini masking polynomial (bb 4.2.0)
+        // The polynomial is stored and reused in shplemini for batching + evaluation
+        if self.has_zk == ZeroKnowledge::Yes {
+            let poly_size = proving_key.circuit_size as usize;
+            let masking_poly = Polynomial::<C::ScalarField>::random(poly_size, &mut self.rng);
+            let commitment = Utils::commit(&masking_poly.coefficients, &proving_key.crs)?;
+            transcript.send_point_to_verifier::<C>(
+                "Gemini:masking_poly_comm".to_string(),
+                commitment.into(),
+            );
+            self.memory.masking_poly = Some(masking_poly);
+        }
         // Compute first three wire commitments
         self.execute_wire_commitments_round(transcript, proving_key)?;
         // Compute sorted list accumulator and commitment

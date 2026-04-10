@@ -179,7 +179,7 @@ pub struct GenericUltraCircuitBuilder<
     ram_arrays: Vec<RamTranscript<T::AcvmType, P::ScalarField, T::Lookup>>,
     pub(crate) lookup_tables: Vec<PlookupBasicTable<P, T>>,
     pub(crate) plookup: Plookup<P::ScalarField>,
-    range_lists: BTreeMap<u64, RangeList>,
+    pub(crate) range_lists: BTreeMap<u64, RangeList>,
     pub(crate) cached_partial_non_native_field_multiplications:
         Vec<CachedPartialNonNativeFieldMultiplication>,
     // Stores gate index of ROM and RAM reads (required by proving key)
@@ -2030,7 +2030,7 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
                 gate_index: x.gate_index,
             })
             .collect();
-        records.sort();
+        records.sort_unstable();
         for record in records {
             let index = record.index;
             let value1 = self.get_variable(record.value_column1_witness.try_into().unwrap());
@@ -2754,12 +2754,12 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
 
     /// Decompose a variable into sublimbs, range-constrain each, and prove reconstruction.
     /// This matches bb 4.2.0's create_limbed_range_constraint.
-    fn create_limbed_range_constraint(
+    pub(crate) fn create_limbed_range_constraint(
         &mut self,
         variable_index: u32,
         num_bits: u64,
         target_range_bitnum: u64,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<u32>> {
         self.assert_valid_variables(&[variable_index]);
 
         let val: num_bigint::BigUint = T::get_public(&self.get_variable(variable_index as usize))
@@ -2866,7 +2866,7 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
                 accumulator_idx = self.add_variable(T::AcvmType::from(new_acc));
             }
         }
-        Ok(())
+        Ok(sublimb_indices)
     }
 
     pub(crate) fn create_new_range_constraint(&mut self, variable_index: u32, target_range: u64) {
@@ -3078,7 +3078,7 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
             T::add_assign(driver, &mut subtrahend, term0);
             T::add_assign(driver, &mut subtrahend, term1);
 
-            let new_accumulator = T::sub(driver, accumulator, subtrahend);
+            let new_accumulator = T::sub(driver, accumulator.clone(), subtrahend);
 
             self.create_big_add_gate(
                 &AddQuad {
@@ -3094,8 +3094,11 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
                 },
                 i != num_limb_triples - 1,
             );
-            accumulator_idx = self.add_variable(new_accumulator.clone());
-            accumulator = new_accumulator;
+            // Only create accumulator variable for non-final iterations (matching bb)
+            if i != num_limb_triples - 1 {
+                accumulator_idx = self.add_variable(new_accumulator.clone());
+                accumulator = new_accumulator;
+            }
         }
 
         Ok(sublimb_indices)
@@ -3332,10 +3335,8 @@ impl<P: CurveGroup, T: NoirWitnessExtensionProtocol<P::ScalarField>>
         self.current_tag
     }
 
-    fn create_tag(&mut self, tag_index: u32, tau_index: u32) -> u32 {
+    fn create_tag(&mut self, tag_index: u32, tau_index: u32) {
         self.tau.insert(tag_index, tau_index);
-        self.current_tag += 1;
-        self.current_tag
     }
 
     fn create_range_list(&mut self, target_range: u64) -> RangeList {
@@ -4347,9 +4348,13 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
             }
 
             self.process_non_native_field_multiplications();
+
             self.process_rom_arrays(driver)?;
+
             self.process_ram_arrays(driver)?;
+
             self.process_range_lists(driver)?;
+
             self.populate_public_inputs_block();
             self.circuit_finalized = true;
         }
@@ -4610,6 +4615,7 @@ impl<P: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<P::Scala
         } else {
             self.add_default_to_public_inputs(driver)?;
         }
+
 
         Ok(())
     }

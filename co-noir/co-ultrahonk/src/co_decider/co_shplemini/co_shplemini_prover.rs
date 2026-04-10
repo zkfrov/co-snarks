@@ -59,30 +59,15 @@ impl<
         let n = 1 << log_n;
         let mut batched_unshifted = SharedPolynomial::new_zero(n); // batched unshifted polynomials
 
-        // To achieve ZK, we mask the batched polynomial by a random polynomial of the same size
+        // To achieve ZK, use the masking polynomial created and committed during oink.
+        // In bb 4.2.0, the masking poly evaluation is no longer sent separately —
+        // it's included in the sumcheck evaluations (index 0 of AllEntities).
         if has_zk == ZeroKnowledge::Yes {
-            batched_unshifted = SharedPolynomial::<T, P>::random(n, self.net, self.state)?;
-            let masking_poly_comm_shared =
-                CoUtils::commit::<T, P>(batched_unshifted.as_ref(), commitment_key);
-
-            // In the provers, the size of multilinear_challenge is `virtual_log_n`, but we need to evaluate the
-            // hiding polynomial as multilinear in log_n variables
-            let masking_poly_eval_shared =
-                batched_unshifted.evaluate_mle(&multilinear_challenge[0..log_n]);
-            let (masking_poly_comm, masking_poly_eval) = T::open_point_and_field(
-                masking_poly_comm_shared,
-                masking_poly_eval_shared,
-                self.net,
-                self.state,
-            )?;
-            transcript.send_point_to_verifier::<P>(
-                "Gemini:masking_poly_comm".to_string(),
-                masking_poly_comm.into(),
-            );
-            transcript.send_fr_to_verifier::<P>(
-                "Gemini:masking_poly_eval".to_string(),
-                masking_poly_eval,
-            );
+            batched_unshifted = self
+                .memory
+                .masking_poly
+                .take()
+                .expect("ZK masking polynomial must be set by oink");
         }
 
         // Generate batching challenge \rho and powers 1,...,\rho^{m-1}

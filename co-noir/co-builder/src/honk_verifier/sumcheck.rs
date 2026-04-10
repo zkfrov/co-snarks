@@ -22,6 +22,8 @@ pub struct SumcheckOutput<C: HonkCurve<TranscriptFieldType>> {
     pub(crate) challenges: Vec<FieldCT<C::ScalarField>>,
     pub(crate) claimed_evaluations: AllEntities<FieldCT<C::ScalarField>, FieldCT<C::ScalarField>>,
     pub(crate) claimed_libra_evaluation: Option<FieldCT<C::ScalarField>>,
+    /// ZK: Gemini masking polynomial evaluation from sumcheck evaluations (index 0)
+    pub(crate) gemini_masking_poly_eval: Option<FieldCT<C::ScalarField>>,
 }
 
 pub struct SumcheckVerifier;
@@ -107,10 +109,23 @@ impl SumcheckVerifier {
         }
         // Extract claimed evaluations of Libra univariates and compute their sum multiplied by the Libra challenge
         // Final round
+        // For ZK flavors, the masking poly evaluation is prepended at index 0 (bb 4.2.0)
+        let num_evals = if has_zk == ZeroKnowledge::Yes {
+            NUM_ALL_ENTITIES + 1
+        } else {
+            NUM_ALL_ENTITIES
+        };
         let transcript_evaluations = transcript
-            .receive_n_from_prover("Sumcheck:evaluations".to_owned(), NUM_ALL_ENTITIES)?;
+            .receive_n_from_prover("Sumcheck:evaluations".to_owned(), num_evals)?;
 
-        let (precomputed, witness) = transcript_evaluations.split_at(PRECOMPUTED_ENTITIES_SIZE);
+        let eval_offset = if has_zk == ZeroKnowledge::Yes { 1 } else { 0 };
+        let gemini_masking_poly_eval = if has_zk == ZeroKnowledge::Yes {
+            Some(transcript_evaluations[0].clone())
+        } else {
+            None
+        };
+        let evals = &transcript_evaluations[eval_offset..];
+        let (precomputed, witness) = evals.split_at(PRECOMPUTED_ENTITIES_SIZE);
         let claimed_evaluations =
             AllEntities::from_elements(witness.to_vec(), precomputed.to_vec());
 
@@ -161,6 +176,7 @@ impl SumcheckVerifier {
             challenges: multivariate_challenge,
             claimed_evaluations,
             claimed_libra_evaluation: libra_evaluation,
+            gemini_masking_poly_eval,
         })
     }
 

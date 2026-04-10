@@ -124,10 +124,16 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         let mut hiding_polynomial_commitment = P::Affine::default();
         let mut batched_evaluation = P::ScalarField::zero();
         if has_zk == ZeroKnowledge::Yes {
-            hiding_polynomial_commitment = transcript
-                .receive_point_from_prover::<P>("Gemini:masking_poly_comm".to_string())?;
-            batched_evaluation =
-                transcript.receive_fr_from_prover::<P>("Gemini:masking_poly_eval".to_string())?;
+            // The masking poly commitment was received during oink verification
+            hiding_polynomial_commitment = self
+                .memory
+                .gemini_masking_commitment
+                .expect("ZK masking poly commitment must be set by oink verifier");
+            // The masking poly evaluation comes from sumcheck evaluations (index 0)
+            batched_evaluation = self
+                .memory
+                .gemini_masking_poly_eval
+                .expect("ZK masking poly evaluation must be set by sumcheck verifier");
         }
 
         // Get the challenge ρ to batch commitments to multilinear polynomials and their shifts

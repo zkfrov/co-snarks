@@ -29,7 +29,7 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
 
         let mut transcript = Transcript::<TranscriptFieldType, H>::new_verifier(honk_proof);
 
-        let oink_verifier = OinkVerifier::new("".to_string());
+        let oink_verifier = OinkVerifier::new("".to_string(), has_zk);
         let oink_result = oink_verifier.verify(verifying_key, &mut transcript)?;
 
         let log_circuit_size = verifying_key.inner_vk.log_circuit_size;

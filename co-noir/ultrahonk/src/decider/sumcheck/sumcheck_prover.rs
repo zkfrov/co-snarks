@@ -316,7 +316,24 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         // Claimed evaluations of Prover polynomials are extracted and added to the transcript. When Flavor has ZK, the
         // evaluations of all witnesses are masked.
         let multivariate_evaluations = Self::extract_claimed_evaluations(partially_evaluated_polys);
-        Self::add_evals_to_transcript(transcript, &multivariate_evaluations);
+
+        // ZK: evaluate the masking polynomial at the sumcheck challenge and prepend to evaluations.
+        // In bb 4.2.0, the masking poly is the first entity (index 0) in AllEntities for ZK flavors,
+        // so its evaluation must be sent as the first element of "Sumcheck:evaluations".
+        let log_n = Utils::get_msb64(circuit_size as u64) as usize;
+        let masking_poly_eval = self
+            .memory
+            .masking_poly
+            .as_ref()
+            .expect("ZK masking polynomial must be set by oink")
+            .evaluate_mle(&multivariate_challenge[..log_n]);
+        let all_evals: Vec<P::ScalarField> = std::iter::once(masking_poly_eval)
+            .chain(multivariate_evaluations.iter().copied())
+            .collect();
+        transcript.send_fr_iter_to_verifier::<P, _>(
+            "Sumcheck:evaluations".to_string(),
+            &all_evals,
+        );
 
         // The evaluations of Libra uninvariates at \f$ g_0(u_0), \ldots, g_{d-1} (u_{d-1}) \f$ are added to the
         // transcript.

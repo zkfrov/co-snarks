@@ -39,27 +39,30 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate init");
 
-        // Barretenberg uses multithreading here
+        use rayon::prelude::*;
+        let challenge = *round_challenge;
 
-        for (poly_src, poly_des) in polys
+        polys
             .public_iter()
             .zip(partially_evaluated_poly.public_iter_mut())
-        {
-            for i in (0..round_size).step_by(2) {
-                poly_des[i >> 1] = poly_src[i] + (poly_src[i + 1] - poly_src[i]) * round_challenge;
-            }
-        }
+            .par_bridge()
+            .for_each(|(poly_src, poly_des)| {
+                for i in (0..round_size).step_by(2) {
+                    poly_des[i >> 1] = poly_src[i] + (poly_src[i + 1] - poly_src[i]) * challenge;
+                }
+            });
 
-        for (poly_src, poly_des) in polys
+        polys
             .shared_iter()
             .zip(partially_evaluated_poly.shared_iter_mut())
-        {
-            for i in (0..round_size).step_by(2) {
-                let tmp = T::sub(poly_src[i + 1], poly_src[i]);
-                let tmp = T::mul_with_public(*round_challenge, tmp);
-                poly_des[i >> 1] = T::add(poly_src[i], tmp);
-            }
-        }
+            .par_bridge()
+            .for_each(|(poly_src, poly_des)| {
+                for i in (0..round_size).step_by(2) {
+                    let tmp = T::sub(poly_src[i + 1], poly_src[i]);
+                    let tmp = T::mul_with_public(challenge, tmp);
+                    poly_des[i >> 1] = T::add(poly_src[i], tmp);
+                }
+            });
     }
 
     pub(crate) fn partially_evaluate_inplace(
@@ -68,33 +71,34 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate inplace");
 
-        // Barretenberg uses multithreading here
+        use rayon::prelude::*;
+        let challenge = *round_challenge;
 
-        for poly in partially_evaluated_poly.public_iter_mut() {
+        // Process all public polynomials in parallel
+        partially_evaluated_poly.public_iter_mut().par_bridge().for_each(|poly| {
             let limit = poly.len();
             for i in (0..limit).step_by(2) {
-                poly[i >> 1] = poly[i] + (poly[i + 1] - poly[i]) * round_challenge;
+                poly[i >> 1] = poly[i] + (poly[i + 1] - poly[i]) * challenge;
             }
-
             poly.truncate(limit / 2 + limit % 2);
             if poly.len() < 2 {
                 poly.push(P::ScalarField::zero());
             }
-        }
+        });
 
-        for poly in partially_evaluated_poly.shared_iter_mut() {
+        // Process all shared polynomials in parallel
+        partially_evaluated_poly.shared_iter_mut().par_bridge().for_each(|poly| {
             let limit = poly.len();
             for i in (0..limit).step_by(2) {
                 let tmp = T::sub(poly[i + 1], poly[i]);
-                let tmp = T::mul_with_public(*round_challenge, tmp);
+                let tmp = T::mul_with_public(challenge, tmp);
                 poly[i >> 1] = T::add(poly[i], tmp);
             }
-
             poly.truncate(limit / 2 + limit % 2);
             if poly.len() < 2 {
                 poly.push(T::ArithmeticShare::default());
             }
-        }
+        });
     }
 
     fn add_evals_to_transcript(
@@ -414,7 +418,27 @@ impl<
         // evaluations of all witnesses are masked.
         let multivariate_evaluations =
             Self::extract_claimed_evaluations(self.net, self.state, partially_evaluated_polys)?;
-        Self::add_evals_to_transcript(transcript, &multivariate_evaluations);
+
+        // ZK: evaluate the masking polynomial at the sumcheck challenge and prepend to evaluations.
+        // In bb 4.2.0, the masking poly is the first entity (index 0) in AllEntities for ZK flavors.
+        {
+            let log_n = co_noir_common::utils::Utils::get_msb64(circuit_size as u64) as usize;
+            let masking_poly_eval_shared = self
+                .memory
+                .masking_poly
+                .as_ref()
+                .expect("ZK masking polynomial must be set by oink")
+                .evaluate_mle(&multivariate_challenge[..log_n]);
+            let masking_poly_eval =
+                T::open_many(&[masking_poly_eval_shared], self.net, self.state)?[0];
+            let all_evals: Vec<P::ScalarField> = std::iter::once(masking_poly_eval)
+                .chain(multivariate_evaluations.iter().copied())
+                .collect();
+            transcript.send_fr_iter_to_verifier::<P, _>(
+                "Sumcheck:evaluations".to_string(),
+                &all_evals,
+            );
+        }
 
         // The evaluations of Libra uninvariates at \f$ g_0(u_0), \ldots, g_{d-1} (u_{d-1}) \f$ are added to the
         // transcript.

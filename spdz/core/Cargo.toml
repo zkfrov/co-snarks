@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+## Skip all MAC computation at compile time. Operator impls only touch
+## the `share` component — zero overhead from the `mac` field.
+## Use when the SNARK proof provides soundness (collaborative proving).
+mac-free = []
+
 [dependencies]
 mpc-core = { version = "0.10.0", path = "../../mpc-core" }
 mpc-net = { version = "0.5.0", path = "../../mpc-net" }
@@ -22,6 +29,7 @@ crossbeam-channel = "0.5"
 eyre = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 sha3 = "0.10"
 num-bigint = { workspace = true }

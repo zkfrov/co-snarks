@@ -79,16 +79,28 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         }
 
         // Final round
+        // For ZK flavors, the masking poly evaluation is prepended at index 0 (bb 4.2.0),
+        // so we read NUM_ALL_ENTITIES + 1 and skip the first element.
+        let num_evals = if has_zk == ZeroKnowledge::Yes {
+            NUM_ALL_ENTITIES + 1
+        } else {
+            NUM_ALL_ENTITIES
+        };
         let transcript_evaluations = transcript.receive_fr_vec_from_prover::<P>(
             "Sumcheck:evaluations".to_string(),
-            NUM_ALL_ENTITIES,
+            num_evals,
         )?;
 
+        let eval_offset = if has_zk == ZeroKnowledge::Yes { 1 } else { 0 };
+        if has_zk == ZeroKnowledge::Yes {
+            // Store the masking poly evaluation (index 0) for use in shplemini
+            self.memory.gemini_masking_poly_eval = Some(transcript_evaluations[0]);
+        }
         for (eval, &transcript_eval) in self
             .memory
             .claimed_evaluations
             .iter_mut()
-            .zip(transcript_evaluations.iter())
+            .zip(transcript_evaluations[eval_offset..].iter())
         {
             *eval = transcript_eval;
         }

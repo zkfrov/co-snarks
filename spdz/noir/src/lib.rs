@@ -76,6 +76,34 @@ pub fn generate_proving_key_spdz_with_options<N: Network>(
     Ok(SpdzProvingKey::create(party_id, builder, &mut driver)?)
 }
 
+/// Generate a SPDZ collaborative UltraHonk proof in MAC-free mode.
+///
+/// Skips MAC computation entirely during proving — no MAC MSM, FFT, or arithmetic.
+/// Roughly halves local computation and network bandwidth.
+/// Safe when the SNARK proof provides soundness (collaborative proving for ZK circuits).
+pub fn prove_spdz_mac_free<
+    C: HonkCurve<TranscriptFieldType>,
+    H: TranscriptHasher<TranscriptFieldType>,
+    N: Network,
+>(
+    net: &N,
+    preprocessing: Box<dyn SpdzPreprocessing<C::ScalarField>>,
+    proving_key: ProvingKey<SpdzUltraHonkDriver, C>,
+    crs: &ProverCrs<C>,
+    has_zk: ZeroKnowledge,
+    verifying_key: &VerifyingKeyBarretenberg<C>,
+) -> eyre::Result<(HonkProof<H::DataType>, Vec<H::DataType>)> {
+    let mut state = SpdzState::new_mac_free(net.id(), preprocessing);
+    state.set_network(net);
+    let num_public_inputs = proving_key.num_public_inputs - PAIRING_POINT_ACCUMULATOR_SIZE;
+    let proof = SpdzCoUltraHonk::<C, H>::prove_inner(
+        net, &mut state, proving_key, crs, has_zk, verifying_key,
+    )?;
+    let (proof, public_inputs) =
+        proof.separate_proof_and_public_inputs(num_public_inputs as usize);
+    Ok((proof, public_inputs))
+}
+
 /// Generate a SPDZ collaborative UltraHonk proof.
 ///
 /// MAC verification is enabled by default. Pass `semi_honest: true` to disable.
@@ -95,6 +123,10 @@ pub fn prove_spdz<
 }
 
 /// Generate a SPDZ collaborative UltraHonk proof with explicit security mode.
+///
+/// When `mac_free` is true, MAC computation is skipped entirely during proving.
+/// This roughly halves local computation (no MAC MSM, FFT, or arithmetic).
+/// Safe when the SNARK proof provides soundness — an invalid proof won't verify.
 pub fn prove_spdz_with_options<
     C: HonkCurve<TranscriptFieldType>,
     H: TranscriptHasher<TranscriptFieldType>,

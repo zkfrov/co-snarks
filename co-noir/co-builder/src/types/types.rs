@@ -543,7 +543,9 @@ impl<C: CurveGroup, T: NoirWitnessExtensionProtocol<C::ScalarField>> Default
 // two field element coordinates (x, y). Thus, four base field elements
 // Four limbs are used when simulating a non-native field using the bigfield class, so 16 total field elements.
 
-impl<C: CurveGroup, T: NoirWitnessExtensionProtocol<C::ScalarField>> PairingPoints<C, T> {
+impl<C: CurveGroup<BaseField: PrimeField>, T: NoirWitnessExtensionProtocol<C::ScalarField>>
+    PairingPoints<C, T>
+{
     pub fn new(p0: BigGroup<C::ScalarField, T>, p1: BigGroup<C::ScalarField, T>) -> Self {
         Self {
             p0,
@@ -574,8 +576,15 @@ impl<C: CurveGroup, T: NoirWitnessExtensionProtocol<C::ScalarField>> PairingPoin
         builder: &mut GenericUltraCircuitBuilder<C, T>,
         driver: &mut T,
     ) -> usize {
-        let start_idx = self.p0.set_public(driver, builder);
-        self.p1.set_public(driver, builder);
+        // bb 4.2.0: element::set_public() does get_standard_form + bigfield::set_public
+        // PER POINT (not batched). This order matters for variable index alignment.
+        let mut p0 = self.p0.get_standard_form(builder, driver)
+            .expect("get_standard_form for p0");
+        let start_idx = p0.set_public_two_limbs(driver, builder);
+
+        let mut p1 = self.p1.get_standard_form(builder, driver)
+            .expect("get_standard_form for p1");
+        p1.set_public_two_limbs(driver, builder);
 
         start_idx
     }
@@ -647,6 +656,8 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
                 .scalar_mul(&recursion_separator, 128, builder, driver)?;
         self.p0
             .add_assign(&mut point_to_aggregate, builder, driver)?;
+        // Apply get_standard_form to match bb's operator+ which calls add_internal + get_standard_form
+        self.p0 = self.p0.get_standard_form(builder, driver)?;
 
         point_to_aggregate =
             other
@@ -655,6 +666,8 @@ impl<C: HonkCurve<TranscriptFieldType>, T: NoirWitnessExtensionProtocol<C::Scala
                 .scalar_mul(&recursion_separator, 128, builder, driver)?;
         self.p1
             .add_assign(&mut point_to_aggregate, builder, driver)?;
+        // Apply get_standard_form to match bb's operator+
+        self.p1 = self.p1.get_standard_form(builder, driver)?;
 
         Ok(())
     }

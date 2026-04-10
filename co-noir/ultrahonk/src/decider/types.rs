@@ -4,7 +4,7 @@ use ark_ec::{CurveGroup, pairing::Pairing};
 use ark_ff::PrimeField;
 use co_noir_common::{
     constants::MAX_PARTIAL_RELATION_LENGTH, keys::verification_key::VerifyingKey,
-    polynomials::polynomial::Polynomials,
+    polynomials::polynomial::{Polynomial, Polynomials},
 };
 use itertools::izip;
 use std::{iter, vec};
@@ -14,6 +14,8 @@ pub(crate) struct ProverMemory<P: CurveGroup> {
     pub(crate) relation_parameters: RelationParameters<P::ScalarField>,
     pub(crate) alphas: [P::ScalarField; NUM_ALPHAS],
     pub(crate) gate_challenges: Vec<P::ScalarField>,
+    /// ZK: Gemini masking polynomial from oink, used in shplemini
+    pub(crate) masking_poly: Option<Polynomial<P::ScalarField>>,
 }
 
 pub(crate) struct VerifierMemory<C: CurveGroup> {
@@ -22,6 +24,10 @@ pub(crate) struct VerifierMemory<C: CurveGroup> {
     pub(crate) alphas: [C::ScalarField; NUM_ALPHAS],
     pub(crate) gate_challenges: Vec<C::ScalarField>,
     pub(crate) claimed_evaluations: ClaimedEvaluations<C::ScalarField>,
+    /// ZK: Gemini masking polynomial commitment from oink, used in shplemini
+    pub(crate) gemini_masking_commitment: Option<C::Affine>,
+    /// ZK: Gemini masking polynomial evaluation from sumcheck evaluations (index 0)
+    pub(crate) gemini_masking_poly_eval: Option<C::ScalarField>,
 }
 
 pub(crate) type ProverUnivariates<F> = AllEntities<Univariate<F, MAX_PARTIAL_RELATION_LENGTH>>;
@@ -177,6 +183,7 @@ impl<P: CurveGroup> ProverMemory<P> {
             relation_parameters,
             alphas,
             gate_challenges,
+            masking_poly: prover_memory.masking_poly,
         }
     }
 }
@@ -224,6 +231,8 @@ impl<C: CurveGroup> VerifierMemory<C> {
             alphas,
             gate_challenges,
             claimed_evaluations: Default::default(),
+            gemini_masking_commitment: verifier_memory.gemini_masking_commitment,
+            gemini_masking_poly_eval: None,
         }
     }
 }

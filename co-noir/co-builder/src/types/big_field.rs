@@ -97,6 +97,71 @@ impl<F: PrimeField> BigField<F> {
         start_index
     }
 
+    /// Set 2 public inputs for this BigField: lo (limb0 + limb1 * 2^68) and hi (limb2 + limb3 * 2^68).
+    /// Used for bb 4.2.0's pairing point accumulator format.
+    /// Creates new witness variables for lo/hi and constrains them via add gates.
+    pub(crate) fn set_public_two_limbs<
+        P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
+        T: NoirWitnessExtensionProtocol<F>,
+    >(
+        &mut self,
+        driver: &mut T,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+    ) -> usize {
+        use crate::types::types::AddTriple;
+
+        // Reduce bigfield to canonical form before combining into 2-limb format (matching bb)
+        self.self_reduce::<P, T>(builder, driver)
+            .expect("self_reduce in set_public_two_limbs");
+
+        let start_index = builder.public_inputs.len();
+        let shift = F::from(BigUint::one() << Self::NUM_LIMB_BITS);
+
+        // Normalize limbs to get their actual witness indices
+        let limb0 = self.binary_basis_limbs[0].element.normalize(builder, driver);
+        let limb1 = self.binary_basis_limbs[1].element.normalize(builder, driver);
+        let limb2 = self.binary_basis_limbs[2].element.normalize(builder, driver);
+        let limb3 = self.binary_basis_limbs[3].element.normalize(builder, driver);
+
+        // Compute lo = limb0 + limb1 * 2^68
+        let limb0_val: F = T::get_public(&builder.get_variable(limb0.witness_index as usize))
+            .expect("pairing accum limbs should be public");
+        let limb1_val: F = T::get_public(&builder.get_variable(limb1.witness_index as usize))
+            .expect("pairing accum limbs should be public");
+        let lo_val = limb0_val + limb1_val * shift;
+        let lo_idx = builder.add_variable(T::AcvmType::from(lo_val));
+        builder.create_add_gate(&AddTriple {
+            a: limb0.witness_index,
+            b: limb1.witness_index,
+            c: lo_idx,
+            a_scaling: P::ScalarField::one(),
+            b_scaling: shift,
+            c_scaling: -P::ScalarField::one(),
+            const_scaling: P::ScalarField::zero(),
+        });
+        builder.set_public_input(lo_idx);
+
+        // Compute hi = limb2 + limb3 * 2^68
+        let limb2_val: F = T::get_public(&builder.get_variable(limb2.witness_index as usize))
+            .expect("pairing accum limbs should be public");
+        let limb3_val: F = T::get_public(&builder.get_variable(limb3.witness_index as usize))
+            .expect("pairing accum limbs should be public");
+        let hi_val = limb2_val + limb3_val * shift;
+        let hi_idx = builder.add_variable(T::AcvmType::from(hi_val));
+        builder.create_add_gate(&AddTriple {
+            a: limb2.witness_index,
+            b: limb3.witness_index,
+            c: hi_idx,
+            a_scaling: P::ScalarField::one(),
+            b_scaling: shift,
+            c_scaling: -P::ScalarField::one(),
+            const_scaling: P::ScalarField::zero(),
+        });
+        builder.set_public_input(hi_idx);
+
+        start_index
+    }
+
     pub(crate) fn new_from_u256(value: BigUint) -> Self {
         let default_maximum_limb: BigUint = BigUint::from((1u128 << Self::NUM_LIMB_BITS) - 1);
         let limbs = [
@@ -615,6 +680,25 @@ impl<F: PrimeField> BigField<F> {
         )
     }
 
+    /// Construct a BigField from 2 Fr elements (lo, hi) where lo has the bottom 2*NUM_LIMB_BITS bits
+    /// and hi has the remaining bits. Each is decomposed into 2 x NUM_LIMB_BITS limbs.
+    /// Used for bb 4.2.0's pairing point accumulator format.
+    pub(crate) fn construct_from_two_limbs<
+        P: CurveGroup<ScalarField = F>,
+        T: NoirWitnessExtensionProtocol<F>,
+    >(
+        lo: &FieldCT<F>,
+        hi: &FieldCT<F>,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+        driver: &mut T,
+    ) -> eyre::Result<Self> {
+        // Use from_slices which creates the same gates as bb's BigField(lo, hi) constructor:
+        // - decompose lo/hi into 4 limbs with range constraints
+        // - evaluate_linear_identity to tie limbs to lo/hi
+        // - prime_basis_limb = lo + hi * shift_2
+        Self::from_slices::<P, T>(lo, hi, driver, builder)
+    }
+
     pub(crate) fn get_value_fq<
         P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
         T: NoirWitnessExtensionProtocol<F>,
@@ -977,12 +1061,10 @@ impl<F: PrimeField> BigField<F> {
         let quotient_limb = FieldCT::from_witness_index(quotient_limb_index);
         let quotient_limb_wi = quotient_limb.get_witness_index(builder, driver);
 
-        // Range-constrain the quotient limb
-        builder.decompose_into_default_range(
-            driver,
+        // Range-constrain the quotient limb (matching bb's create_limbed_range_constraint)
+        let _ = builder.create_limbed_range_constraint(
             quotient_limb_wi,
             maximum_quotient_bits,
-            None,
             GenericUltraCircuitBuilder::<P, T>::DEFAULT_PLOOKUP_RANGE_BITNUM as u64,
         )?;
 
@@ -1032,6 +1114,167 @@ impl<F: PrimeField> BigField<F> {
             self.binary_basis_limbs[i] = remainder.binary_basis_limbs[i].clone();
         }
         self.prime_basis_limb = remainder.prime_basis_limb.clone();
+        Ok(())
+    }
+
+    /// Assert that all limbs are zero when predicate is true.
+    /// Matches bb's bigfield::assert_zero_if.
+    pub(crate) fn assert_zero_if<
+        P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
+        T: NoirWitnessExtensionProtocol<F>,
+    >(
+        &self,
+        predicate: &BoolCT<F, T>,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+        driver: &mut T,
+    ) -> eyre::Result<()> {
+        let predicate_field = predicate.to_field_ct(driver);
+        for limb in &self.binary_basis_limbs {
+            let product = FieldCT::multiply(&limb.element, &predicate_field, builder, driver)?;
+            product.assert_is_zero(builder);
+        }
+        let product = FieldCT::multiply(&self.prime_basis_limb, &predicate_field, builder, driver)?;
+        product.assert_is_zero(builder);
+        Ok(())
+    }
+
+    /// Assert that this BigField value is less than the target modulus (Fq).
+    /// Matches bb's bigfield::assert_is_in_field.
+    pub(crate) fn assert_is_in_field<
+        P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
+        T: NoirWitnessExtensionProtocol<F>,
+    >(
+        &self,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+        driver: &mut T,
+    ) -> eyre::Result<()> {
+        if self.is_constant() {
+            return Ok(());
+        }
+
+        // Range constrain the binary basis limbs
+        let limb0_idx = self.binary_basis_limbs[0]
+            .element
+            .normalize(builder, driver)
+            .witness_index;
+        let limb1_idx = self.binary_basis_limbs[1]
+            .element
+            .normalize(builder, driver)
+            .witness_index;
+        let limb2_idx = self.binary_basis_limbs[2]
+            .element
+            .normalize(builder, driver)
+            .witness_index;
+        let limb3_idx = self.binary_basis_limbs[3]
+            .element
+            .normalize(builder, driver)
+            .witness_index;
+
+        builder.range_constrain_two_limbs(
+            limb0_idx,
+            limb1_idx,
+            Self::NUM_LIMB_BITS,
+            Self::NUM_LIMB_BITS,
+            driver,
+        )?;
+        builder.range_constrain_two_limbs(
+            limb2_idx,
+            limb3_idx,
+            Self::NUM_LIMB_BITS,
+            Self::NUM_LAST_LIMB_BITS,
+            driver,
+        )?;
+
+        // Now check value < modulus via borrow subtraction
+        // modulus - 1 (strict upper limit)
+        let modulus: BigUint = P::BaseField::MODULUS.into();
+        let strict_limit = &modulus - BigUint::one();
+        let limb_mask = (BigUint::one() << Self::NUM_LIMB_BITS) - BigUint::one();
+
+        let limit_0 = F::from(&strict_limit & &limb_mask);
+        let limit_1 = F::from((&strict_limit >> Self::NUM_LIMB_BITS) & &limb_mask);
+        let limit_2 = F::from((&strict_limit >> (Self::NUM_LIMB_BITS * 2)) & &limb_mask);
+        let limit_3 = F::from(&strict_limit >> (Self::NUM_LIMB_BITS * 3));
+
+        // Get limb values
+        let val_0: F = T::get_public(&builder.get_variable(limb0_idx as usize))
+            .expect("limb should be public");
+        let val_1: F = T::get_public(&builder.get_variable(limb1_idx as usize))
+            .expect("limb should be public");
+        let val_2: F = T::get_public(&builder.get_variable(limb2_idx as usize))
+            .expect("limb should be public");
+
+        let val_0_uint: BigUint = val_0.into();
+        let val_1_uint: BigUint = val_1.into();
+        let val_2_uint: BigUint = val_2.into();
+        let limit_0_uint: BigUint = limit_0.into();
+        let limit_1_uint: BigUint = limit_1.into();
+        let limit_2_uint: BigUint = limit_2.into();
+
+        let borrow_0 = val_0_uint > limit_0_uint;
+        let borrow_1 = (val_1_uint.clone() + if borrow_0 { BigUint::one() } else { BigUint::ZERO })
+            > limit_1_uint;
+        let borrow_2 = (val_2_uint.clone() + if borrow_1 { BigUint::one() } else { BigUint::ZERO })
+            > limit_2_uint;
+
+        let shift_1 = F::from(BigUint::one() << Self::NUM_LIMB_BITS);
+
+        let borrow_0_f = if borrow_0 { F::one() } else { F::zero() };
+        let borrow_1_f = if borrow_1 { F::one() } else { F::zero() };
+        let borrow_2_f = if borrow_2 { F::one() } else { F::zero() };
+
+        // Create borrow witnesses and constrain them to be boolean
+        let borrow_0_idx = builder.add_variable(T::AcvmType::from(borrow_0_f));
+        let borrow_1_idx = builder.add_variable(T::AcvmType::from(borrow_1_f));
+        let borrow_2_idx = builder.add_variable(T::AcvmType::from(borrow_2_f));
+        builder.create_bool_gate(borrow_0_idx);
+        builder.create_bool_gate(borrow_1_idx);
+        builder.create_bool_gate(borrow_2_idx);
+
+        // Create r0-r3 using FieldCT lazy arithmetic (matching bb's field_t approach).
+        // r0 = limit_0 - limb_0 + borrow_0 * shift
+        // r1 = limit_1 - limb_1 + borrow_1 * shift - borrow_0
+        // r2 = limit_2 - limb_2 + borrow_2 * shift - borrow_1
+        // r3 = limit_3 - limb_3 - borrow_2
+        let borrow_0_ct = FieldCT { witness_index: borrow_0_idx, multiplicative_constant: F::one(), additive_constant: F::zero() };
+        let borrow_1_ct = FieldCT { witness_index: borrow_1_idx, multiplicative_constant: F::one(), additive_constant: F::zero() };
+        let borrow_2_ct = FieldCT { witness_index: borrow_2_idx, multiplicative_constant: F::one(), additive_constant: F::zero() };
+        let shift_ct = FieldCT::from(shift_1);
+        let limb_0_ct = self.binary_basis_limbs[0].element.normalize(builder, driver);
+        let limb_1_ct = self.binary_basis_limbs[1].element.normalize(builder, driver);
+        let limb_2_ct = self.binary_basis_limbs[2].element.normalize(builder, driver);
+        let limb_3_ct = self.binary_basis_limbs[3].element.normalize(builder, driver);
+
+        // r0 = limit_0 - limb_0 + borrow_0 * shift
+        let r0 = FieldCT::from(limit_0)
+            .sub(&limb_0_ct, builder, driver)
+            .add(&FieldCT::multiply(&borrow_0_ct, &shift_ct, builder, driver)?, builder, driver);
+        let r0_idx = r0.get_witness_index(builder, driver);
+
+        // r1 = limit_1 - limb_1 + borrow_1 * shift - borrow_0
+        let r1 = FieldCT::from(limit_1)
+            .sub(&limb_1_ct, builder, driver)
+            .add(&FieldCT::multiply(&borrow_1_ct, &shift_ct, builder, driver)?, builder, driver)
+            .sub(&borrow_0_ct, builder, driver);
+        let r1_idx = r1.get_witness_index(builder, driver);
+
+        // r2 = limit_2 - limb_2 + borrow_2 * shift - borrow_1
+        let r2 = FieldCT::from(limit_2)
+            .sub(&limb_2_ct, builder, driver)
+            .add(&FieldCT::multiply(&borrow_2_ct, &shift_ct, builder, driver)?, builder, driver)
+            .sub(&borrow_1_ct, builder, driver);
+        let r2_idx = r2.get_witness_index(builder, driver);
+
+        // r3 = limit_3 - limb_3 - borrow_2
+        let r3 = FieldCT::from(limit_3)
+            .sub(&limb_3_ct, builder, driver)
+            .sub(&borrow_2_ct, builder, driver);
+        let r3_idx = r3.get_witness_index(builder, driver);
+
+        // Range constrain r0, r1, r2, r3
+        builder.range_constrain_two_limbs(r0_idx, r1_idx, Self::NUM_LIMB_BITS, Self::NUM_LIMB_BITS, driver)?;
+        builder.range_constrain_two_limbs(r2_idx, r3_idx, Self::NUM_LIMB_BITS, Self::NUM_LIMB_BITS, driver)?;
+
         Ok(())
     }
 
@@ -1736,6 +1979,19 @@ impl<F: PrimeField> BigField<F> {
     // @param check_for_zero If the zero check should be enabled
     //
     // @return The result of division
+    pub(crate) fn internal_div_pub<
+        P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
+        T: NoirWitnessExtensionProtocol<F>,
+    >(
+        numerators: &mut [Self],
+        denominator: &mut Self,
+        check_for_zero: bool,
+        builder: &mut GenericUltraCircuitBuilder<P, T>,
+        driver: &mut T,
+    ) -> eyre::Result<Self> {
+        Self::internal_div(numerators, denominator, check_for_zero, builder, driver)
+    }
+
     fn internal_div<
         P: CurveGroup<ScalarField = F, BaseField: PrimeField>,
         T: NoirWitnessExtensionProtocol<F>,
@@ -2107,8 +2363,9 @@ impl<F: PrimeField> BigField<F> {
         ];
 
         let remainder_prime_limb = FieldCT::accumulate(&prime_limb_accumulator, builder, driver)?;
-
+        let _um1 = builder.variables.len();
         let modulus: BigUint = Fq::MODULUS.into();
+        let _um2 = builder.variables.len();
         let witnesses = NonNativeMultiplicationFieldWitnesses {
             a: left.get_binary_basis_limb_witness_indices(builder, driver)?,
             b: to_mul.get_binary_basis_limb_witness_indices(builder, driver)?,
@@ -2152,7 +2409,6 @@ impl<F: PrimeField> BigField<F> {
                 driver,
             )?;
         } else {
-            //TACEO TODO: We can batch the two decompositions into a single one here for more efficiency
             hi.create_range_constraint(carry_hi_msb, builder, driver)?;
             lo.create_range_constraint(carry_lo_msb, builder, driver)?;
         }

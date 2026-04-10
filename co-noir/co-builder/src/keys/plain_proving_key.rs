@@ -257,6 +257,7 @@ impl<P: CurveGroup> PlainPkTrait<P> for PlainProvingKey<P> {
             mapping.ids,
             active_region_data,
         );
+
     }
 
     #[expect(private_interfaces)]
@@ -340,7 +341,6 @@ impl<P: CurveGroup> PlainPkTrait<P> for PlainProvingKey<P> {
         assert!(permutation_polynomials[0].len() < PERMUTATION_ARGUMENT_VALUE_SEPARATOR as usize);
 
         let domain_size = active_region_data.size();
-        // TACEO TODO Barrettenberg uses multithreading here
 
         for (wire_idx, current_permutation_poly) in permutation_polynomials.iter_mut().enumerate() {
             for i in 0..domain_size {
