@@ -90,6 +90,12 @@ toml = "0.8"
 tracing = { version = "0.1" }
 tracing-subscriber = "0.3"
 
+# Noir's acvm_blackbox_solver depends on keccak = "0.2.0-rc.0" but that
+# pre-release was never published to crates.io. Cargo resolves to 0.2.0 (stable)
+# which has breaking API changes (f1600 removed). Pin to the git tag.
+[patch.crates-io]
+keccak = { git = "https://github.com/RustCrypto/sponges.git", tag = "keccak-v0.2.0-rc.0" }
+
 # This profile can be used for CI in pull requests.
 [profile.ci-dev]
 opt-level = 1
