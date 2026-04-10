@@ -163,14 +163,14 @@ impl<
         tracing::trace!("Decider prove");
 
         // Run sumcheck subprotocol.
-        let _t = std::time::Instant::now();
+        let _t = web_time::Instant::now();
         let (sumcheck_output, zk_sumcheck_data) =
             self.execute_relation_check_rounds(&mut transcript, crs, circuit_size, virtual_log_n)?;
         eprintln!("PROFILE sumcheck took {:.1}s", _t.elapsed().as_secs_f64());
 
         // Fiat-Shamir: rho, y, x, z
         // Execute Zeromorph multilinear PCS
-        let _t = std::time::Instant::now();
+        let _t = web_time::Instant::now();
         self.execute_pcs_rounds(
             &mut transcript,
             circuit_size,

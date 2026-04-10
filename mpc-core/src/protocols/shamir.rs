@@ -8,7 +8,7 @@ use itertools::izip;
 use mpc_net::Network;
 use rand::{CryptoRng, Rng, SeedableRng};
 use rngs::ShamirRng;
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::{MpcState, RngType};
 

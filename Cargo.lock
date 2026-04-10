@@ -1368,6 +1368,7 @@ dependencies = [
  "sha3",
  "tracing",
  "ultrahonk",
+ "web-time",
 ]
 
 [[package]]
@@ -2868,6 +2869,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.18",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
