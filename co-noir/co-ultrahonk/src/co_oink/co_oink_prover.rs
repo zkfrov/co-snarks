@@ -561,9 +561,14 @@ impl<
             self.mask_polynomial(proving_key.polynomials.witness.w_o_mut())?;
         };
 
-        // Truncate to active trace size — trailing zeros don't affect the commitment
-        // but Pippenger still processes them. Skipping saves ~30% MSM work.
-        let active = proving_key.final_active_wire_idx + 1;
+        // Truncate to active trace size when NOT in ZK mode — trailing zeros don't affect
+        // the commitment but Pippenger still processes them. Skip to save ~30% MSM work.
+        // In ZK mode, mask_polynomial adds random values beyond active trace — don't truncate.
+        let active = if self.has_zk == ZeroKnowledge::Yes {
+            proving_key.polynomials.witness.w_l().as_ref().len()
+        } else {
+            proving_key.final_active_wire_idx + 1
+        };
         let w_l = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_l().as_ref()[..active], crs);
         let w_r = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_r().as_ref()[..active], crs);
         let w_o = CoUtils::commit::<T, C>(&proving_key.polynomials.witness.w_o().as_ref()[..active], crs);
@@ -604,7 +609,11 @@ impl<
         };
 
         // Commit to lookup argument polynomials and the finalized (i.e. with memory records) fourth wire polynomial
-        let active = proving_key.final_active_wire_idx + 1;
+        let active = if self.has_zk == ZeroKnowledge::Yes {
+            self.memory.w_4.as_ref().len()
+        } else {
+            proving_key.final_active_wire_idx + 1
+        };
         let lookup_read_counts = CoUtils::commit::<T, C>(
             &proving_key.polynomials.witness.lookup_read_counts().as_ref()[..active],
             crs,
@@ -673,7 +682,11 @@ impl<
         };
 
         // This is from the previous round, but we open it here with z_perm
-        let active = proving_key.final_active_wire_idx + 1;
+        let active = if self.has_zk == ZeroKnowledge::Yes {
+            self.memory.lookup_inverses.as_ref().len()
+        } else {
+            proving_key.final_active_wire_idx + 1
+        };
         let lookup_inverses = CoUtils::commit::<T, C>(&self.memory.lookup_inverses.as_ref()[..active], crs);
 
         let z_perm = CoUtils::commit::<T, C>(&self.memory.z_perm.as_ref()[..active], crs);
