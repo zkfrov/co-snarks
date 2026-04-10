@@ -590,9 +590,9 @@ impl U256 {
         let mask = if range == 256 {
             Uint::<256, 4>::MAX
         } else {
-            (Uint::<256, 4>::from(1u8) << range) - Uint::<256, 4>::from(1u8)
+            (Uint::<256, 4>::from(1u8) << (range as usize)) - Uint::<256, 4>::from(1u8)
         };
-        U256((self.0 >> start) & mask)
+        U256((self.0 >> (start as usize)) & mask)
     }
 
     pub fn to_buffer(inp: &[Self]) -> Vec<u8> {
