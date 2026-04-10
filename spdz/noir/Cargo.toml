@@ -20,7 +20,7 @@ co-noir-common = { version = "0.2.0", path = "../../co-noir/co-noir-common" }
 co-noir-types = { path = "../../co-noir/co-noir-types" }
 co-ultrahonk = { version = "0.6.0", path = "../../co-noir/co-ultrahonk" }
 mpc-core = { version = "0.10.0", path = "../../mpc-core" }
-mpc-net = { version = "0.5.0", path = "../../mpc-net" }
+mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
 noir-types = { path = "../../co-noir/noir-types" }
 ark-bn254 = { workspace = true }
 ark-ec = { workspace = true }

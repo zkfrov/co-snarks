@@ -31,5 +31,5 @@ rand.workspace = true
 rand_chacha.workspace = true
 
 [dev-dependencies]
-mpc-net = { version = "0.5.0", path = "../../mpc-net", features = ["local"] }
+mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false, features = ["local"] }
 serde_json.workspace = true

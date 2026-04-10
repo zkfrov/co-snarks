@@ -12,7 +12,7 @@ readme.workspace = true
 
 [dependencies]
 mpc-core = { version = "0.10.0", path = "../../mpc-core" }
-mpc-net = { version = "0.5.0", path = "../../mpc-net" }
+mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
 noir-types = { version = "0.1.1", path = "../noir-types" }
 rayon.workspace = true
 ark-serialize.workspace = true
