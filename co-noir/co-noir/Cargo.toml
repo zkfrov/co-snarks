@@ -12,6 +12,10 @@ rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["rustls"]
+rustls = ["dep:rustls", "mpc-net/tcp"]
+
 [dependencies]
 acir.workspace = true
 ark-bn254.workspace = true
@@ -32,7 +36,7 @@ mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false 
 noirc-abi.workspace = true
 noirc-artifacts.workspace = true
 rand.workspace = true
-rustls.workspace = true
+rustls = { workspace = true, optional = true }
 serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true

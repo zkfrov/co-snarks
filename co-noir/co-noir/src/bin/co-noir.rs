@@ -18,6 +18,7 @@ use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
 };
+#[cfg(feature = "rustls")]
 use mpc_net::tcp::{NetworkConfig, TcpNetwork};
 use noir_types::HonkProofType;
 use serde::{Deserialize, Serialize};
@@ -823,6 +824,7 @@ fn install_tracing() {
 
 fn main() -> color_eyre::Result<ExitCode> {
     install_tracing();
+    #[cfg(feature = "rustls")]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| eyre::eyre!("Could not install default rustls crypto provider"))?;
