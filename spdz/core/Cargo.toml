@@ -14,6 +14,7 @@ default = []
 mac-free = []
 
 [dependencies]
+co-noir-common = { version = "0.2.0", path = "../../co-noir/co-noir-common" }
 mpc-core = { version = "0.10.0", path = "../../mpc-core" }
 mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
 fancy-garbling = { git = "https://github.com/GaloisInc/swanky", rev = "5ff648457218b74da9d8323b7ca47166ff5be4b3" }

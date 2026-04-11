@@ -211,7 +211,7 @@ fn mul_many_mac_free<F: PrimeField, N: Network>(
     net: &N,
     state: &mut SpdzState<F>,
 ) -> eyre::Result<Vec<SpdzPrimeFieldShare<F>>> {
-    use rayon::prelude::*;
+    use co_noir_common::maybe_rayon::*;
     let n = xs.len();
     let (a_vec, b_vec, c_vec) = state.preprocessing.next_triple_batch(n)?;
 
@@ -440,7 +440,7 @@ pub fn msm_public_points<C: CurveGroup>(
     points: &[C::Affine],
     scalars: &[SpdzPrimeFieldShare<C::ScalarField>],
 ) -> SpdzPointShare<C> {
-    use rayon::prelude::*;
+    use co_noir_common::maybe_rayon::*;
     let shares: Vec<C::ScalarField> = scalars.par_iter().map(|s| s.share).collect();
     let share = C::msm_unchecked(points, &shares);
 
@@ -466,7 +466,7 @@ pub fn fft<F: PrimeField>(
     data: &[SpdzPrimeFieldShare<F>],
     domain: &impl ark_poly::EvaluationDomain<F>,
 ) -> Vec<SpdzPrimeFieldShare<F>> {
-    use rayon::prelude::*;
+    use co_noir_common::maybe_rayon::*;
     let shares: Vec<F> = data.par_iter().map(|s| s.share).collect();
     let fft_shares = domain.fft(&shares);
 

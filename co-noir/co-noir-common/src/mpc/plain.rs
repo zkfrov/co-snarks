@@ -13,7 +13,7 @@ use mpc_core::PlainState;
 use mpc_net::Network;
 use num_traits::Zero;
 use rand::thread_rng;
-use rayon::prelude::*;
+use crate::maybe_rayon::*;
 use std::any::Any;
 use std::any::TypeId;
 

@@ -12,7 +12,7 @@ use mpc_core::protocols::shamir::{
 };
 use mpc_net::Network;
 use num_traits::Zero;
-use rayon::prelude::*;
+use crate::maybe_rayon::*;
 
 /// A UltraHonk driver using shamir secret sharing
 #[derive(Debug)]

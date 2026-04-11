@@ -111,7 +111,7 @@ impl UltraPermutationRelation {
         let mut wsigma3 = None;
         let mut wsigma4 = None;
 
-        rayon::scope(|scope| {
+        co_noir_common::maybe_rayon::scope(|scope| {
             scope.spawn(|_| wid1 = Some(T::add_with_public_many_iter(id_1, w_1, id)));
             scope.spawn(|_| wid2 = Some(T::add_with_public_many_iter(id_2, w_2, id)));
             scope.spawn(|_| wid3 = Some(T::add_with_public_many_iter(id_3, w_3, id)));

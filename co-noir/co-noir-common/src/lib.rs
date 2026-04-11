@@ -1,3 +1,5 @@
+pub mod maybe_rayon;
+
 use crate::barycentric::Barycentric;
 use crate::crs::ProverCrs;
 use crate::honk_curve::HonkCurve;

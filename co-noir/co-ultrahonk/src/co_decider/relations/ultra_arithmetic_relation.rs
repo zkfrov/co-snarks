@@ -13,7 +13,7 @@ use co_noir_common::{
 use itertools::izip;
 use mpc_core::MpcState;
 use mpc_net::Network;
-use rayon::prelude::*;
+use co_noir_common::maybe_rayon::*;
 use ultrahonk::prelude::Univariate;
 
 #[derive(Clone, Debug)]
@@ -330,7 +330,7 @@ impl<T: NoirUltraHonkProver<P>, P: HonkCurve<TranscriptFieldType>> Relation<T, P
     ) -> HonkProofResult<()> {
         tracing::trace!("Accumulate UltraArithmeticRelation");
         let id = state.id();
-        rayon::join(
+        co_noir_common::maybe_rayon::join(
             || {
                 Self::compute_r0(
                     state,

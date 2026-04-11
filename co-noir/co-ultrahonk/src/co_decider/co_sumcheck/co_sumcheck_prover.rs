@@ -39,7 +39,7 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate init");
 
-        use rayon::prelude::*;
+        use co_noir_common::maybe_rayon::*;
         let challenge = *round_challenge;
 
         polys
@@ -71,7 +71,7 @@ impl<
     ) {
         tracing::trace!("Partially_evaluate inplace");
 
-        use rayon::prelude::*;
+        use co_noir_common::maybe_rayon::*;
         let challenge = *round_challenge;
 
         // Process all public polynomials in parallel

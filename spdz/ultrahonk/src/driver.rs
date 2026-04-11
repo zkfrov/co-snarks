@@ -9,7 +9,7 @@ use co_noir_common::mpc::NoirUltraHonkProver;
 use itertools::izip;
 use mpc_net::Network;
 use num_traits::Zero;
-use rayon::prelude::*;
+use co_noir_common::maybe_rayon::*;
 use spdz_core::arithmetic;
 use spdz_core::types::{SpdzPointShare, SpdzPrimeFieldShare};
 use spdz_core::{SpdzPartyID, SpdzState};

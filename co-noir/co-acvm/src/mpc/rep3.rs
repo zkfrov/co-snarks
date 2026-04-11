@@ -25,7 +25,7 @@ use mpc_core::{
 };
 use mpc_net::Network;
 use num_bigint::BigUint;
-use rayon::prelude::*;
+use co_noir_common::maybe_rayon::*;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 use std::array;

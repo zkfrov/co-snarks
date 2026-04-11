@@ -5,7 +5,7 @@ use ark_poly::EvaluationDomain;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use mpc_core::MpcState;
 use mpc_net::Network;
-use rayon::iter::{
+use crate::maybe_rayon::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 

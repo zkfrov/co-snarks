@@ -16,7 +16,7 @@ use mpc_core::{
 };
 use mpc_net::Network;
 use num_bigint::BigUint;
-use rayon::prelude::*;
+use crate::maybe_rayon::*;
 use std::any::TypeId;
 #[derive(Debug)]
 pub struct Rep3UltraHonkDriver;
