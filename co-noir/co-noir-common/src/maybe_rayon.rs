@@ -10,6 +10,16 @@ pub use self::sequential::*;
 
 #[cfg(target_arch = "wasm32")]
 mod sequential {
+    // Marker traits matching rayon's API
+    pub trait ParallelIterator: Iterator + Sized {
+        fn with_min_len(self, _min: usize) -> Self { self }
+    }
+    pub trait IndexedParallelIterator: ParallelIterator {}
+
+    // Blanket impls: any Iterator is a "ParallelIterator" in sequential mode
+    impl<I: Iterator> ParallelIterator for I {}
+    impl<I: Iterator> IndexedParallelIterator for I {}
+
     pub trait IntoParallelIterator {
         type Iter: Iterator<Item = Self::Item>;
         type Item;
@@ -32,24 +42,24 @@ mod sequential {
         type Item = T;
         fn into_par_iter(self) -> Self::Iter { self.into_iter() }
     }
-    impl<'a, T> IntoParallelRefIterator<'a> for Vec<T> {
+    impl<'a, T: 'a> IntoParallelRefIterator<'a> for Vec<T> {
         type Iter = std::slice::Iter<'a, T>;
         type Item = &'a T;
         fn par_iter(&'a self) -> Self::Iter { self.iter() }
     }
-    impl<'a, T> IntoParallelRefMutIterator<'a> for Vec<T> {
+    impl<'a, T: 'a> IntoParallelRefMutIterator<'a> for Vec<T> {
         type Iter = std::slice::IterMut<'a, T>;
         type Item = &'a mut T;
         fn par_iter_mut(&'a mut self) -> Self::Iter { self.iter_mut() }
     }
 
     // [T]
-    impl<'a, T> IntoParallelRefIterator<'a> for [T] {
+    impl<'a, T: 'a> IntoParallelRefIterator<'a> for [T] {
         type Iter = std::slice::Iter<'a, T>;
         type Item = &'a T;
         fn par_iter(&'a self) -> Self::Iter { self.iter() }
     }
-    impl<'a, T> IntoParallelRefMutIterator<'a> for [T] {
+    impl<'a, T: 'a> IntoParallelRefMutIterator<'a> for [T] {
         type Iter = std::slice::IterMut<'a, T>;
         type Item = &'a mut T;
         fn par_iter_mut(&'a mut self) -> Self::Iter { self.iter_mut() }
@@ -66,23 +76,33 @@ mod sequential {
     impl<A: IntoParallelIterator, B: IntoParallelIterator> IntoParallelIterator for (A, B) {
         type Iter = std::iter::Zip<A::Iter, B::Iter>;
         type Item = (A::Item, B::Item);
-        fn into_par_iter(self) -> Self::Iter { self.0.into_par_iter().zip(self.1.into_par_iter()) }
+        fn into_par_iter(self) -> Self::Iter {
+            self.0.into_par_iter().zip(self.1.into_par_iter())
+        }
     }
 
     pub fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
-    where A: FnOnce() -> RA, B: FnOnce() -> RB {
+    where
+        A: FnOnce() -> RA,
+        B: FnOnce() -> RB,
+    {
         (a(), b())
     }
 
     pub fn scope<'scope, F, R>(f: F) -> R
-    where F: FnOnce(&Scope<'scope>) -> R {
+    where
+        F: FnOnce(&Scope<'scope>) -> R,
+    {
         let s = Scope(std::marker::PhantomData);
         f(&s)
     }
 
     pub struct Scope<'scope>(std::marker::PhantomData<&'scope ()>);
     impl<'scope> Scope<'scope> {
-        pub fn spawn<F>(&self, f: F) where F: FnOnce(&Scope<'scope>) + Send + 'scope {
+        pub fn spawn<F>(&self, f: F)
+        where
+            F: FnOnce(&Scope<'scope>) + Send + 'scope,
+        {
             f(self);
         }
     }
