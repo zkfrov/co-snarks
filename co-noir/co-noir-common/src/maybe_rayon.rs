@@ -1,21 +1,21 @@
-//! Rayon compatibility layer: parallel on native, sequential on WASM.
+//! Rayon compatibility layer.
 //!
-//! On native: re-exports rayon's actual parallel iterators.
-//! On WASM: provides sequential shims that match rayon's API surface.
+//! With `parallel` feature (default): re-exports rayon for real multi-threading.
+//! Without `parallel` feature: provides sequential shims.
+//!
+//! For WASM with wasm-bindgen-rayon: keep `parallel` enabled.
+//! For WASM without thread support: disable `parallel`.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "parallel")]
 pub use rayon::prelude::*;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "parallel")]
 pub use rayon::{join, scope};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "parallel"))]
 pub use self::sequential::*;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "parallel"))]
 mod sequential {
-    use itertools::Itertools;
-
-    // Marker traits — blanket-impl on all iterators so rayon trait bounds are satisfied
     pub trait ParallelIterator: Iterator + Sized {
         fn with_min_len(self, _min: usize) -> Self { self }
     }
@@ -71,7 +71,7 @@ mod sequential {
         fn into_par_iter(self) -> Self::Iter { self }
     }
 
-    // Tuple impls using multizip from itertools
+    // Tuple impls using izip for sequential multizip
     macro_rules! impl_par_iter_tuple {
         (($($T:ident),+), ($($idx:tt),+)) => {
             impl<'a, $($T: 'a),+> IntoParallelIterator for ($(&'a Vec<$T>,)+) {

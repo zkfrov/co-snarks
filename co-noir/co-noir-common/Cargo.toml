@@ -10,11 +10,15 @@ license.workspace = true
 publish.workspace = true
 readme.workspace = true
 
+[features]
+default = ["parallel"]
+parallel = ["rayon"]
+
 [dependencies]
 mpc-core = { version = "0.10.0", path = "../../mpc-core" }
 mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
 noir-types = { version = "0.1.1", path = "../noir-types" }
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 ark-serialize.workspace = true
 ark-poly.workspace = true
 ark-ec.workspace = true
