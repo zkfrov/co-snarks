@@ -85,8 +85,9 @@ impl UltraArithmeticRelation {
 }
 
 impl UltraArithmeticRelation {
-    fn compute_r0<T, P>(
-        state: &mut T::State,
+    fn compute_r0_with_mul<T, P>(
+        mul: &[P::ScalarField],
+        id: <<T as NoirUltraHonkProver<P>>::State as mpc_core::MpcState>::PartyID,
         r0: &mut Univariate<P::ScalarField, 6>,
         input: &ProverUnivariatesBatch<T, P>,
         scaling_factors: &[P::ScalarField],
@@ -110,9 +111,6 @@ impl UltraArithmeticRelation {
         let one = P::ScalarField::from(1_u64);
         let neg_half = -P::ScalarField::from(2u64).inverse().unwrap();
         let three = P::ScalarField::from(3_u64);
-
-        let mul = T::local_mul_vec(w_l, w_r, state);
-        let id = state.id();
         let tmp_l: Vec<_> = izip!(w_l, q_l)
             .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l))
             .collect();
@@ -128,7 +126,7 @@ impl UltraArithmeticRelation {
             .collect();
 
         let acc = izip!(
-            &mul,
+            mul,
             &tmp_l,
             &tmp_r,
             &tmp_o,
@@ -308,11 +306,20 @@ impl<T: NoirUltraHonkProver<P>, P: HonkCurve<TranscriptFieldType>> Relation<T, P
         scaling_factors: &[P::ScalarField],
     ) -> HonkProofResult<()> {
         tracing::trace!("Accumulate UltraArithmeticRelation");
+
+        // Do the network-dependent multiplication BEFORE the parallel section.
+        // local_mul_vec uses Beaver multiplication (requires send/recv).
+        let w_l = input.witness.w_l();
+        let w_r = input.witness.w_r();
+        let mul = T::local_mul_vec(w_l, w_r, state);
         let id = state.id();
-        co_noir_common::maybe_rayon::join(
+
+        // Now both compute_r0 and compute_r1 are purely local — safe for rayon.
+        rayon::join(
             || {
-                Self::compute_r0(
-                    state,
+                Self::compute_r0_with_mul(
+                    &mul,
+                    id,
                     &mut univariate_accumulator.r0,
                     input,
                     scaling_factors,
