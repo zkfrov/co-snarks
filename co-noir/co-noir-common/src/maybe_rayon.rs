@@ -101,22 +101,21 @@ mod sequential {
         fn into_par_iter(self) -> Self::Iter { self }
     }
 
-    // Tuple impls — rayon supports up to 12-tuples
-    // We use itertools::izip! internally
+    // Tuple impls using multizip from itertools
     macro_rules! impl_par_iter_tuple {
         (($($T:ident),+), ($($idx:tt),+)) => {
             impl<'a, $($T: 'a),+> IntoParallelIterator for ($(&'a Vec<$T>,)+) {
-                type Iter = itertools::ZipEq<($(std::slice::Iter<'a, $T>,)+)>;
+                type Iter = Box<dyn Iterator<Item = Self::Item> + 'a>;
                 type Item = ($(&'a $T,)+);
                 fn into_par_iter(self) -> Self::Iter {
-                    itertools::izip!($(self.$idx.iter(),)+)
+                    Box::new(itertools::izip!($(self.$idx.iter()),+))
                 }
             }
             impl<'a, $($T: 'a),+> IntoParallelIterator for ($(&'a [$T],)+) {
-                type Iter = itertools::ZipEq<($(std::slice::Iter<'a, $T>,)+)>;
+                type Iter = Box<dyn Iterator<Item = Self::Item> + 'a>;
                 type Item = ($(&'a $T,)+);
                 fn into_par_iter(self) -> Self::Iter {
-                    itertools::izip!($(self.$idx.iter(),)+)
+                    Box::new(itertools::izip!($(self.$idx.iter()),+))
                 }
             }
         };
