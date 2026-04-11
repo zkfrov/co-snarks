@@ -18,41 +18,11 @@ mod sequential {
     // Marker traits — blanket-impl on all iterators so rayon trait bounds are satisfied
     pub trait ParallelIterator: Iterator + Sized {
         fn with_min_len(self, _min: usize) -> Self { self }
-        // rayon's fold takes a factory fn; in sequential mode we just call it once
-        fn fold<T, ID, F>(self, identity: ID, fold_op: F) -> Fold<Self, ID, F>
-        where
-            ID: Fn() -> T,
-            F: Fn(T, Self::Item) -> T,
-        {
-            Fold { iter: self, identity, fold_op }
-        }
     }
     pub trait IndexedParallelIterator: ParallelIterator {}
 
     impl<I: Iterator> ParallelIterator for I {}
     impl<I: Iterator> IndexedParallelIterator for I {}
-
-    // Fold adapter that mimics rayon's Fold (which returns an iterator of partial results)
-    pub struct Fold<I, ID, F> {
-        iter: I,
-        identity: ID,
-        fold_op: F,
-    }
-
-    impl<I, ID, F, T> Fold<I, ID, F>
-    where
-        I: Iterator,
-        ID: Fn() -> T,
-        F: Fn(T, I::Item) -> T,
-    {
-        pub fn reduce<R>(self, _identity: impl Fn() -> T, _reduce: R) -> T
-        where
-            R: Fn(T, T) -> T,
-        {
-            let init = (self.identity)();
-            self.iter.fold(init, self.fold_op)
-        }
-    }
 
     pub trait IntoParallelIterator {
         type Iter: Iterator<Item = Self::Item>;
