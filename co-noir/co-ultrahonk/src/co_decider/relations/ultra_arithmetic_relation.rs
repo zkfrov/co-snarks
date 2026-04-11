@@ -113,33 +113,32 @@ impl UltraArithmeticRelation {
 
         let mul = T::local_mul_vec(w_l, w_r, state);
         let id = state.id();
-        let tmp_l = (w_l, q_l)
-            .into_par_iter()
-            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l));
+        let tmp_l: Vec<_> = izip!(w_l, q_l)
+            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l))
+            .collect();
 
-        let tmp_r = (w_r, q_r)
-            .into_par_iter()
-            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l));
-        let tmp_o = (w_o, q_o)
-            .into_par_iter()
-            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l));
-        let tmp_4 = (w_4, q_4)
-            .into_par_iter()
-            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l));
+        let tmp_r: Vec<_> = izip!(w_r, q_r)
+            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l))
+            .collect();
+        let tmp_o: Vec<_> = izip!(w_o, q_o)
+            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l))
+            .collect();
+        let tmp_4: Vec<_> = izip!(w_4, q_4)
+            .map(|(w_l, q_l)| T::mul_with_public_to_half_share(*q_l, *w_l))
+            .collect();
 
-        let acc = (
+        let acc = izip!(
             &mul,
-            tmp_l,
-            tmp_r,
-            tmp_o,
-            tmp_4,
+            &tmp_l,
+            &tmp_r,
+            &tmp_o,
+            &tmp_4,
             q_c,
             q_m,
             q_arith,
             w_4_shift,
             scaling_factors,
         )
-            .into_par_iter()
             .map(
                 |(
                     mul,
@@ -156,7 +155,7 @@ impl UltraArithmeticRelation {
                     let mut tmp = *mul * q_m;
                     tmp *= *q_arith - three;
                     tmp *= neg_half;
-                    tmp += tmp_l + tmp_r + tmp_o + tmp_4;
+                    tmp += *tmp_l + *tmp_r + *tmp_o + *tmp_4;
                     T::add_assign_public_half_share(&mut tmp, *q_c, id);
 
                     let tmp_arith = T::mul_with_public_to_half_share(*q_arith - one, *w_4_shift);
@@ -167,18 +166,9 @@ impl UltraArithmeticRelation {
             )
             .enumerate()
             .fold(
-                || [P::ScalarField::default(); MAX_PARTIAL_RELATION_LENGTH],
+                [P::ScalarField::default(); MAX_PARTIAL_RELATION_LENGTH],
                 |mut acc, (idx, tmp)| {
                     acc[idx % MAX_PARTIAL_RELATION_LENGTH] += tmp;
-                    acc
-                },
-            )
-            .reduce(
-                || [P::ScalarField::default(); MAX_PARTIAL_RELATION_LENGTH],
-                |mut acc, next| {
-                    for (acc, next) in izip!(acc.iter_mut(), next) {
-                        *acc += next;
-                    }
                     acc
                 },
             );
@@ -204,9 +194,7 @@ impl UltraArithmeticRelation {
 
         let one = P::ScalarField::from(1_u64);
         let two = P::ScalarField::from(2_u64);
-        let acc = (w_l, w_4, w_l_shift, q_m, q_arith, scaling_factors)
-            .into_par_iter()
-            .with_min_len(MIN_RAYON_ITER)
+        let acc = izip!(w_l, w_4, w_l_shift, q_m, q_arith, scaling_factors)
             .map(|(w_l, w_4, w_l_shift, q_m, q_arith, scaling_factor)| {
                 let tmp = T::add(*w_l, *w_4);
                 let tmp = T::sub(tmp, *w_l_shift);
@@ -218,18 +206,9 @@ impl UltraArithmeticRelation {
             })
             .enumerate()
             .fold(
-                || [T::ArithmeticShare::default(); MAX_PARTIAL_RELATION_LENGTH],
+                [T::ArithmeticShare::default(); MAX_PARTIAL_RELATION_LENGTH],
                 |mut acc, (idx, tmp)| {
                     T::add_assign(&mut acc[idx % MAX_PARTIAL_RELATION_LENGTH], tmp);
-                    acc
-                },
-            )
-            .reduce(
-                || [T::ArithmeticShare::default(); MAX_PARTIAL_RELATION_LENGTH],
-                |mut acc, next| {
-                    for (acc, next) in izip!(acc.iter_mut(), next) {
-                        T::add_assign(acc, next);
-                    }
                     acc
                 },
             );
