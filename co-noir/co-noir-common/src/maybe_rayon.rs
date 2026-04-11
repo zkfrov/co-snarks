@@ -8,8 +8,27 @@
 
 #[cfg(feature = "parallel")]
 pub use rayon::prelude::*;
-#[cfg(feature = "parallel")]
-pub use rayon::{join, scope};
+
+// join/scope are always sequential: the closures may call network I/O
+// (Beaver multiplication) which uses JS functions bound to the main thread.
+// Rayon worker threads can't access those JS closures.
+pub fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+where A: FnOnce() -> RA + Send, B: FnOnce() -> RB + Send, RA: Send, RB: Send {
+    (a(), b())
+}
+
+pub fn scope<'scope, F, R>(f: F) -> R
+where F: FnOnce(&Scope<'scope>) -> R + Send, R: Send {
+    let s = Scope(std::marker::PhantomData);
+    f(&s)
+}
+
+pub struct Scope<'scope>(std::marker::PhantomData<&'scope ()>);
+impl<'scope> Scope<'scope> {
+    pub fn spawn<F>(&self, f: F) where F: FnOnce(&Scope<'scope>) + Send + 'scope {
+        f(self);
+    }
+}
 
 #[cfg(not(feature = "parallel"))]
 pub use self::sequential::*;
