@@ -107,6 +107,26 @@ mod sequential {
         }
     }
 
+    // par_bridge: convert any iterator to "parallel" (noop in sequential)
+    pub trait ParallelBridge: Iterator + Sized {
+        fn par_bridge(self) -> Self { self }
+    }
+    impl<I: Iterator> ParallelBridge for I {}
+
+    // (&Vec<A>, &Vec<B>) -> zip iter
+    impl<'a, A: 'a, B: 'a> IntoParallelIterator for (&'a Vec<A>, &'a Vec<B>) {
+        type Iter = std::iter::Zip<std::slice::Iter<'a, A>, std::slice::Iter<'a, B>>;
+        type Item = (&'a A, &'a B);
+        fn into_par_iter(self) -> Self::Iter { self.0.iter().zip(self.1.iter()) }
+    }
+
+    // (&[A], &[B]) -> zip iter
+    impl<'a, A: 'a, B: 'a> IntoParallelIterator for (&'a [A], &'a [B]) {
+        type Iter = std::iter::Zip<std::slice::Iter<'a, A>, std::slice::Iter<'a, B>>;
+        type Item = (&'a A, &'a B);
+        fn into_par_iter(self) -> Self::Iter { self.0.iter().zip(self.1.iter()) }
+    }
+
     pub trait ParallelSlice<T> {
         fn par_chunks_exact(&self, chunk_size: usize) -> std::slice::ChunksExact<'_, T>;
     }
