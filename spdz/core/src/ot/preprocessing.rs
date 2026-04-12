@@ -83,6 +83,25 @@ pub fn create_ot_preprocessing<F: PrimeField, N: Network>(
 }
 
 impl<F: PrimeField> OtPreprocessing<F> {
+    /// Pre-generate triples via OT before proving starts.
+    /// After this call, the network pointer is cleared — no lazy generation during proving.
+    /// This prevents OT messages from interleaving with proving protocol messages.
+    pub fn prefill(&mut self, num_triples: usize) {
+        if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
+            let count = std::cmp::max(num_triples, BATCH_SIZE);
+            let (triples, _) = (func)(ptr, count, self.party_id)
+                .expect("OT triple pre-generation failed");
+            self.triple_buf = triples;
+        }
+        // Also fill randoms, bits, masks
+        self.refill_randoms();
+        self.refill_bits();
+        self.refill_input_masks();
+        // Clear network pointer — no more lazy generation
+        self.net_ptr = None;
+        self.net_fn = None;
+    }
+
     fn refill_triples(&mut self) {
         if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
             let (triples, _) = (func)(ptr, BATCH_SIZE, self.party_id)
