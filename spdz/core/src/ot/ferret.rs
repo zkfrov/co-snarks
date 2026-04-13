@@ -119,31 +119,39 @@ impl<N: Network + Unpin + 'static> FerretSession<N> {
         })
     }
 
-    /// Generate `count` RCOTs where THIS party is the RCOT sender.
-    /// Returns (keys: Vec<Block>, delta: Block).
-    pub fn gen_rcot_as_sender(&mut self, count: usize) -> eyre::Result<(Vec<Block>, Block)> {
+    /// Alloc+flush the RCOT sender for `count` RCOTs. Does the LPN/I/O work
+    /// upfront. Subsequent `consume_sender(n)` calls are in-memory only.
+    pub fn prepare_sender(&mut self, count: usize) -> eyre::Result<Block> {
         RCOTSender::alloc(&mut self.sender, count)
             .map_err(|e| eyre::eyre!("alloc sender: {e}"))?;
         block_on(self.sender.flush(&mut self.ctx))
             .map_err(|e| eyre::eyre!("flush sender: {e}"))?;
-        let out = self
-            .sender
-            .try_send_rcot(count)
-            .map_err(|e| eyre::eyre!("try_send_rcot: {e}"))?;
-        let delta = self.sender.delta();
-        Ok((out.keys, delta))
+        Ok(self.sender.delta())
     }
 
-    /// Generate `count` RCOTs where THIS party is the RCOT receiver.
-    /// Returns (choices: Vec<bool>, msgs: Vec<Block>).
-    pub fn gen_rcot_as_receiver(&mut self, count: usize) -> eyre::Result<(Vec<bool>, Vec<Block>)> {
+    /// Consume `n` previously-prepared RCOT sender outputs (no I/O).
+    pub fn consume_sender(&mut self, n: usize) -> eyre::Result<Vec<Block>> {
+        let out = self
+            .sender
+            .try_send_rcot(n)
+            .map_err(|e| eyre::eyre!("try_send_rcot: {e}"))?;
+        Ok(out.keys)
+    }
+
+    /// Alloc+flush the RCOT receiver for `count` RCOTs.
+    pub fn prepare_receiver(&mut self, count: usize) -> eyre::Result<()> {
         RCOTReceiver::alloc(&mut self.receiver, count)
             .map_err(|e| eyre::eyre!("alloc receiver: {e}"))?;
         block_on(self.receiver.flush(&mut self.ctx))
             .map_err(|e| eyre::eyre!("flush receiver: {e}"))?;
+        Ok(())
+    }
+
+    /// Consume `n` previously-prepared RCOT receiver outputs (no I/O).
+    pub fn consume_receiver(&mut self, n: usize) -> eyre::Result<(Vec<bool>, Vec<Block>)> {
         let out = self
             .receiver
-            .try_recv_rcot(count)
+            .try_recv_rcot(n)
             .map_err(|e| eyre::eyre!("try_recv_rcot: {e}"))?;
         Ok((out.choices, out.msgs))
     }
@@ -178,9 +186,16 @@ fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
     net: &N,
     x_values: &[F],
 ) -> eyre::Result<Vec<F>> {
+    let field_bits = F::MODULUS_BIT_SIZE as usize;
+    let total = x_values.len() * field_bits;
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+    // One flush for all chunks.
+    let delta = session.prepare_sender(total)?;
     let mut out = Vec::with_capacity(x_values.len());
     for chunk in x_values.chunks(GILBOA_CHUNK) {
-        out.extend(gilboa_send_chunk(session, net, chunk)?);
+        out.extend(gilboa_send_chunk(session, net, chunk, delta)?);
     }
     Ok(out)
 }
@@ -189,6 +204,7 @@ fn gilboa_send_chunk<F: PrimeField, N: Network + Unpin + 'static>(
     session: &mut FerretSession<N>,
     net: &N,
     x_values: &[F],
+    delta: Block,
 ) -> eyre::Result<Vec<F>> {
     let field_bits = F::MODULUS_BIT_SIZE as usize;
     let n = x_values.len();
@@ -197,8 +213,8 @@ fn gilboa_send_chunk<F: PrimeField, N: Network + Unpin + 'static>(
     }
     let total = n * field_bits;
 
-    // Step 1: Get RCOT sender output (keys) + delta.
-    let (keys, delta) = session.gen_rcot_as_sender(total)?;
+    // Step 1: Consume `total` pre-prepared RCOT sender outputs (no I/O).
+    let keys = session.consume_sender(total)?;
     debug_assert_eq!(keys.len(), total);
 
     // Step 2: Receive derandomization bits d_i from receiver so we can
@@ -251,6 +267,12 @@ fn gilboa_recv<F: PrimeField, N: Network + Unpin + 'static>(
     net: &N,
     y_values: &[F],
 ) -> eyre::Result<Vec<F>> {
+    let field_bits = F::MODULUS_BIT_SIZE as usize;
+    let total = y_values.len() * field_bits;
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+    session.prepare_receiver(total)?;
     let mut out = Vec::with_capacity(y_values.len());
     for chunk in y_values.chunks(GILBOA_CHUNK) {
         out.extend(gilboa_recv_chunk(session, net, chunk)?);
@@ -287,7 +309,7 @@ fn gilboa_recv_chunk<F: PrimeField, N: Network + Unpin + 'static>(
     // For this scaffold, we rely on the caller to implement the derandomization
     // in gilboa_send (which knows d_i via the net.recv). See TODO below.
 
-    let (random_choices, msgs) = session.gen_rcot_as_receiver(total)?;
+    let (random_choices, msgs) = session.consume_receiver(total)?;
 
     // Compute d_i = random_choice_i XOR desired_bit_i, send to sender.
     let mut d_bits: Vec<u8> = Vec::with_capacity((total + 7) / 8);
