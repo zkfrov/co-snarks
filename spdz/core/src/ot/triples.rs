@@ -176,28 +176,35 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
         .map(|i| a_shares[i] * b_shares[i] + cross1_shares[i] + cross2_shares[i])
         .collect();
 
-    // Step 4: MAC authentication via Gilboa OT — reuse SAME KOS instance.
-    // MAC round 1: party 0 uses alpha_0, party 1 uses v (values need MACing)
-    eprintln!("[OT] party {party_id} mac1 batched...");
-    let t = std::time::Instant::now();
+    // Step 4: MAC authentication — 3 separate batches for a, b, c (same size as cross rounds)
     let all_values: Vec<F> = a_shares.iter().chain(b_shares.iter()).chain(c_shares.iter()).copied().collect();
+
+    // Helper to run one MAC round on a chunk
+    let mut mac_round = |party_id: usize, my_vals: &[F], kos_sender: &mut Option<KosSender>, kos_receiver: &mut Option<KosReceiver>, channel: &mut NetworkChannel<'_, N>, rng: &mut AesRng| -> eyre::Result<Vec<F>> {
+        let mut results = Vec::with_capacity(my_vals.len());
+        for chunk in my_vals.chunks(count) {
+            let chunk_shares = gilboa_mul_batch::<F>(
+                party_id, chunk, channel, kos_sender, kos_receiver, rng,
+            )?;
+            results.extend(chunk_shares);
+        }
+        Ok(results)
+    };
+
+    eprintln!("[OT] party {party_id} mac1 ({} values in {} chunks)...", all_values.len(), (all_values.len() + count - 1) / count);
+    let t = std::time::Instant::now();
     let my_vals_mac1: Vec<F> = all_values.iter()
         .map(|&v| if party_id == 0 { mac_key_share } else { v })
         .collect();
-    let mac_cross1 = gilboa_mul_batch::<F>(
-        party_id, &my_vals_mac1, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-    )?;
+    let mac_cross1 = mac_round(party_id, &my_vals_mac1, &mut kos_sender, &mut kos_receiver, &mut channel, &mut rng)?;
     eprintln!("[OT] party {party_id} mac1 done: {:.2}s", t.elapsed().as_secs_f64());
 
-    // MAC round 2: values swapped — party 0 uses v, party 1 uses alpha_1
-    eprintln!("[OT] party {party_id} mac2 batched...");
+    eprintln!("[OT] party {party_id} mac2...");
     let t = std::time::Instant::now();
     let my_vals_mac2: Vec<F> = all_values.iter()
         .map(|&v| if party_id == 0 { v } else { mac_key_share })
         .collect();
-    let mac_cross2 = gilboa_mul_batch::<F>(
-        party_id, &my_vals_mac2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-    )?;
+    let mac_cross2 = mac_round(party_id, &my_vals_mac2, &mut kos_sender, &mut kos_receiver, &mut channel, &mut rng)?;
     eprintln!("[OT] party {party_id} mac2 done: {:.2}s", t.elapsed().as_secs_f64());
 
     // Assemble triples with MACs
