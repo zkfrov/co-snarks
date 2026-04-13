@@ -139,11 +139,17 @@ impl<F: PrimeField> OtPreprocessing<F> {
     /// This prevents OT messages from interleaving with proving protocol messages.
     pub fn prefill(&mut self, num_triples: usize) {
         if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
-            let count = std::cmp::max(num_triples, BATCH_SIZE);
-            let (triples, _) = (func)(ptr, count, self.party_id)
-                .expect("OT triple pre-generation failed");
-            self.triples_prefilled = triples.len();
-            self.triple_buf = triples;
+            // Chunk OT calls — each batch ~6-7s. Larger batches cause broken pipe
+            // due to message size limits (~200MB+ pairs vector per call).
+            let mut accumulated: Vec<_> = Vec::new();
+            let target = std::cmp::max(num_triples, BATCH_SIZE);
+            while accumulated.len() < target {
+                let (batch, _) = (func)(ptr, BATCH_SIZE, self.party_id)
+                    .expect("OT triple pre-generation failed");
+                accumulated.extend(batch);
+            }
+            self.triples_prefilled = accumulated.len();
+            self.triple_buf = accumulated;
         }
         self.refill_randoms();
         self.randoms_prefilled = self.random_buf.len();
