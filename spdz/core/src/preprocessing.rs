@@ -434,28 +434,51 @@ impl<F: PrimeField> SpdzPreprocessing<F> for LazyDummyPreprocessing<F> {
 
     fn next_triple(&mut self) -> eyre::Result<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)> {
         if self.triple_buf.is_empty() { self.refill_triples(); }
+        DUMMY_TRIPLES_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.triple_buf.pop().unwrap())
     }
 
     fn next_shared_random(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.random_buf.is_empty() { self.refill_randoms(); }
+        DUMMY_RANDOMS_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.random_buf.pop().unwrap())
     }
 
     fn next_shared_bit(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.bit_buf.is_empty() { self.refill_bits(); }
+        DUMMY_BITS_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.bit_buf.pop().unwrap())
     }
 
     fn next_input_mask(&mut self) -> eyre::Result<(F, SpdzPrimeFieldShare<F>)> {
         if self.input_mask_buf.is_empty() { self.refill_input_masks(); }
+        DUMMY_INPUT_MASKS_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.input_mask_buf.pop().ok_or_else(|| eyre::eyre!("No input masks"))
     }
 
     fn next_counterparty_input_mask(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.counter_mask_buf.is_empty() { self.refill_input_masks(); }
+        DUMMY_COUNTER_MASKS_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.counter_mask_buf.pop().ok_or_else(|| eyre::eyre!("No counterparty masks"))
     }
+}
+
+// Global usage counters for the dummy (lazy) preprocessing.
+// Use to measure exact triple/random/bit consumption per proof.
+use std::sync::atomic::AtomicUsize;
+pub static DUMMY_TRIPLES_USED: AtomicUsize = AtomicUsize::new(0);
+pub static DUMMY_RANDOMS_USED: AtomicUsize = AtomicUsize::new(0);
+pub static DUMMY_BITS_USED: AtomicUsize = AtomicUsize::new(0);
+pub static DUMMY_INPUT_MASKS_USED: AtomicUsize = AtomicUsize::new(0);
+pub static DUMMY_COUNTER_MASKS_USED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn reset_dummy_stats() {
+    use std::sync::atomic::Ordering;
+    DUMMY_TRIPLES_USED.store(0, Ordering::Relaxed);
+    DUMMY_RANDOMS_USED.store(0, Ordering::Relaxed);
+    DUMMY_BITS_USED.store(0, Ordering::Relaxed);
+    DUMMY_INPUT_MASKS_USED.store(0, Ordering::Relaxed);
+    DUMMY_COUNTER_MASKS_USED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
