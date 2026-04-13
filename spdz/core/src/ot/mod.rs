@@ -15,6 +15,11 @@ pub mod channel;
 pub mod preprocessing;
 pub mod triples;
 
+#[cfg(feature = "ferret")]
+pub mod async_io;
+#[cfg(feature = "ferret")]
+pub mod ferret;
+
 use mpc_net::Network;
 
 use crate::types::SpdzPrimeFieldShare;

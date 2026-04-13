@@ -12,6 +12,10 @@ use crate::network::SpdzNetworkExt;
 use crate::preprocessing::SpdzPreprocessing;
 use crate::types::SpdzPrimeFieldShare;
 use super::triples::generate_triples_via_ot;
+#[cfg(feature = "ferret")]
+use std::sync::Arc;
+#[cfg(feature = "ferret")]
+use super::ferret::generate_triples_via_ferret;
 
 const BATCH_SIZE: usize = 4096;
 
@@ -48,6 +52,10 @@ pub struct OtPreprocessing<F: PrimeField> {
         Vec<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)>,
         F,
     )>>,
+    /// Ferret path: owns the network as Arc and generates triples with it.
+    /// Mutually exclusive with `net_ptr`/`net_fn` (classic KOS path).
+    #[cfg(feature = "ferret")]
+    ferret_net: Option<Box<dyn FerretTripleGen<F>>>,
     // Buffers
     triple_buf: Vec<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)>,
     random_buf: Vec<SpdzPrimeFieldShare<F>>,
@@ -83,6 +91,79 @@ pub struct OtStats {
 // Safety: used single-threaded per party
 unsafe impl<F: PrimeField> Send for OtPreprocessing<F> {}
 
+/// Trait-object wrapper so OtPreprocessing can hold an Arc<N> without leaking N.
+#[cfg(feature = "ferret")]
+pub trait FerretTripleGen<F: PrimeField>: Send {
+    fn gen_triples(
+        &self,
+        count: usize,
+    ) -> eyre::Result<(
+        Vec<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)>,
+        F,
+    )>;
+}
+
+#[cfg(feature = "ferret")]
+struct FerretTripleGenImpl<F: PrimeField, N: Network + Unpin + 'static> {
+    net: Arc<N>,
+    _phantom: std::marker::PhantomData<F>,
+}
+
+#[cfg(feature = "ferret")]
+impl<F: PrimeField, N: Network + Unpin + 'static> FerretTripleGen<F> for FerretTripleGenImpl<F, N> {
+    fn gen_triples(
+        &self,
+        count: usize,
+    ) -> eyre::Result<(
+        Vec<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)>,
+        F,
+    )> {
+        generate_triples_via_ferret::<F, N>(count, self.net.clone())
+    }
+}
+
+/// Create a Ferret-OT-based preprocessing source.
+///
+/// Both parties must call this with their `Arc<N>`. MAC keys are exchanged
+/// via the network. Call `prefill(n)` before proving to pre-generate triples.
+#[cfg(feature = "ferret")]
+pub fn create_ferret_preprocessing<F: PrimeField, N: Network + Unpin + 'static>(
+    net: Arc<N>,
+) -> OtPreprocessing<F> {
+    let party_id = net.id();
+    let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+    let mac_key_share = F::rand(&mut rng);
+    let other_mac: F = net.exchange(mac_key_share).expect("MAC key exchange failed");
+    let mac_key = mac_key_share + other_mac;
+
+    OtPreprocessing {
+        party_id,
+        mac_key_share,
+        mac_key,
+        rng,
+        net_ptr: None,
+        net_fn: None,
+        ferret_net: Some(Box::new(FerretTripleGenImpl::<F, N> {
+            net,
+            _phantom: std::marker::PhantomData,
+        })),
+        triple_buf: Vec::new(),
+        random_buf: Vec::new(),
+        bit_buf: Vec::new(),
+        input_mask_buf: Vec::new(),
+        counter_mask_buf: Vec::new(),
+        triples_consumed: 0,
+        randoms_consumed: 0,
+        bits_consumed: 0,
+        input_masks_consumed: 0,
+        counter_masks_consumed: 0,
+        triples_prefilled: 0,
+        randoms_prefilled: 0,
+        bits_prefilled: 0,
+        input_masks_prefilled: 0,
+    }
+}
+
 /// Create an OT-based preprocessing source.
 ///
 /// Both parties must call this with their respective party_id.
@@ -116,6 +197,8 @@ pub fn create_ot_preprocessing<F: PrimeField, N: Network>(
         rng,
         net_ptr: Some(net as *const N as *const u8),
         net_fn: Some(gen_triples::<F, N>),
+        #[cfg(feature = "ferret")]
+        ferret_net: None,
         triple_buf: Vec::new(),
         random_buf: Vec::new(),
         bit_buf: Vec::new(),
@@ -138,18 +221,27 @@ impl<F: PrimeField> OtPreprocessing<F> {
     /// After this call, the network pointer is cleared — no lazy generation during proving.
     /// This prevents OT messages from interleaving with proving protocol messages.
     pub fn prefill(&mut self, num_triples: usize) {
-        if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
-            // Chunk OT calls — each batch ~6-7s. Larger batches cause broken pipe
-            // due to message size limits (~200MB+ pairs vector per call).
-            let mut accumulated: Vec<_> = Vec::new();
+        #[cfg(feature = "ferret")]
+        if let Some(g) = &self.ferret_net {
+            // Ferret: one big batch amortizes LPN startup cost.
             let target = std::cmp::max(num_triples, BATCH_SIZE);
-            while accumulated.len() < target {
-                let (batch, _) = (func)(ptr, BATCH_SIZE, self.party_id)
-                    .expect("OT triple pre-generation failed");
-                accumulated.extend(batch);
+            let (batch, _) = g.gen_triples(target).expect("Ferret triple pre-generation failed");
+            self.triples_prefilled = batch.len();
+            self.triple_buf = batch;
+        }
+        if self.triple_buf.is_empty() {
+            if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
+                // KOS path — chunk into smaller batches for broken-pipe avoidance.
+                let mut accumulated: Vec<_> = Vec::new();
+                let target = std::cmp::max(num_triples, BATCH_SIZE);
+                while accumulated.len() < target {
+                    let (batch, _) = (func)(ptr, BATCH_SIZE, self.party_id)
+                        .expect("OT triple pre-generation failed");
+                    accumulated.extend(batch);
+                }
+                self.triples_prefilled = accumulated.len();
+                self.triple_buf = accumulated;
             }
-            self.triples_prefilled = accumulated.len();
-            self.triple_buf = accumulated;
         }
         self.refill_randoms();
         self.randoms_prefilled = self.random_buf.len();
@@ -159,6 +251,10 @@ impl<F: PrimeField> OtPreprocessing<F> {
         self.input_masks_prefilled = self.input_mask_buf.len() + self.counter_mask_buf.len();
         self.net_ptr = None;
         self.net_fn = None;
+        #[cfg(feature = "ferret")]
+        {
+            self.ferret_net = None;
+        }
     }
 
     pub fn stats(&self) -> OtStats {
@@ -176,6 +272,12 @@ impl<F: PrimeField> OtPreprocessing<F> {
     }
 
     fn refill_triples(&mut self) {
+        #[cfg(feature = "ferret")]
+        if let Some(g) = &self.ferret_net {
+            let (triples, _) = g.gen_triples(BATCH_SIZE).expect("Ferret triple refill failed");
+            self.triple_buf = triples;
+            return;
+        }
         if let (Some(ptr), Some(func)) = (self.net_ptr, self.net_fn) {
             let (triples, _) = (func)(ptr, BATCH_SIZE, self.party_id)
                 .expect("OT triple generation failed");
@@ -250,6 +352,10 @@ impl<F: PrimeField> SpdzPreprocessing<F> for OtPreprocessing<F> {
             rng: rand_chacha::ChaCha20Rng::seed_from_u64(fork_seed),
             net_ptr: self.net_ptr,
             net_fn: self.net_fn,
+            // Forks don't get a Ferret session — they consume from prefilled buf
+            // or fall back to dummy generation. Forks happen after prefill.
+            #[cfg(feature = "ferret")]
+            ferret_net: None,
             triple_buf: Vec::new(),
             random_buf: Vec::new(),
             bit_buf: Vec::new(),

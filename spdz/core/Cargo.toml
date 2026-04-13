@@ -12,6 +12,9 @@ default = []
 ## the `share` component — zero overhead from the `mac` field.
 ## Use when the SNARK proof provides soundness (collaborative proving).
 mac-free = []
+## Enable Ferret OT preprocessing (silent OT, ~100x faster than KOS for bulk).
+## Pulls in mpz dependencies. Native-only for now (uses tokio).
+ferret = ["dep:mpz-core", "dep:mpz-ot", "dep:mpz-ot-core", "dep:mpz-common", "dep:tokio", "dep:futures", "dep:async-trait"]
 
 [dependencies]
 co-noir-common = { version = "0.2.0", path = "../../co-noir/co-noir-common" }
@@ -36,6 +39,15 @@ sha3 = "0.10"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 tracing = { workspace = true }
+
+# Ferret OT (optional)
+mpz-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-ot = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true, features = ["ideal"] }
+mpz-ot-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-common = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+tokio = { version = "1", features = ["rt", "sync", "io-util", "macros"], optional = true }
+futures = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 ark-ec = { workspace = true }
