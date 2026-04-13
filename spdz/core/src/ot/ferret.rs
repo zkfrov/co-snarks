@@ -191,11 +191,19 @@ fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
     if total == 0 {
         return Ok(Vec::new());
     }
-    // One flush for all chunks.
+    eprintln!("[ferret] sender: alloc+flush {total} RCOTs...");
+    let t = std::time::Instant::now();
     let delta = session.prepare_sender(total)?;
+    eprintln!("[ferret] sender: flush done in {:.1}s", t.elapsed().as_secs_f64());
+
+    let n_chunks = (x_values.len() + GILBOA_CHUNK - 1) / GILBOA_CHUNK;
     let mut out = Vec::with_capacity(x_values.len());
-    for chunk in x_values.chunks(GILBOA_CHUNK) {
+    let t_chunks = std::time::Instant::now();
+    for (i, chunk) in x_values.chunks(GILBOA_CHUNK).enumerate() {
         out.extend(gilboa_send_chunk(session, net, chunk, delta)?);
+        if i % 8 == 0 || i + 1 == n_chunks {
+            eprintln!("[ferret] sender: τ chunk {}/{} ({:.1}s)", i + 1, n_chunks, t_chunks.elapsed().as_secs_f64());
+        }
     }
     Ok(out)
 }
@@ -272,10 +280,19 @@ fn gilboa_recv<F: PrimeField, N: Network + Unpin + 'static>(
     if total == 0 {
         return Ok(Vec::new());
     }
+    eprintln!("[ferret] receiver: alloc+flush {total} RCOTs...");
+    let t = std::time::Instant::now();
     session.prepare_receiver(total)?;
+    eprintln!("[ferret] receiver: flush done in {:.1}s", t.elapsed().as_secs_f64());
+
+    let n_chunks = (y_values.len() + GILBOA_CHUNK - 1) / GILBOA_CHUNK;
     let mut out = Vec::with_capacity(y_values.len());
-    for chunk in y_values.chunks(GILBOA_CHUNK) {
+    let t_chunks = std::time::Instant::now();
+    for (i, chunk) in y_values.chunks(GILBOA_CHUNK).enumerate() {
         out.extend(gilboa_recv_chunk(session, net, chunk)?);
+        if i % 8 == 0 || i + 1 == n_chunks {
+            eprintln!("[ferret] receiver: τ chunk {}/{} ({:.1}s)", i + 1, n_chunks, t_chunks.elapsed().as_secs_f64());
+        }
     }
     Ok(out)
 }
