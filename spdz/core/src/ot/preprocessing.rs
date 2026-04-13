@@ -19,6 +19,24 @@ const BATCH_SIZE: usize = 4096;
 ///
 /// Unlike DummyPreprocessing (trusted dealer), this generates triples
 /// securely between two parties without any trusted third party.
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Global counters — last-known stats for debugging.
+// Only one OtPreprocessing instance per process is expected during prove.
+pub static TRIPLES_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+pub static RANDOMS_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+pub static BITS_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+pub static INPUT_MASKS_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+pub static COUNTER_MASKS_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn reset_stats() {
+    TRIPLES_CONSUMED.store(0, Ordering::Relaxed);
+    RANDOMS_CONSUMED.store(0, Ordering::Relaxed);
+    BITS_CONSUMED.store(0, Ordering::Relaxed);
+    INPUT_MASKS_CONSUMED.store(0, Ordering::Relaxed);
+    COUNTER_MASKS_CONSUMED.store(0, Ordering::Relaxed);
+}
+
 pub struct OtPreprocessing<F: PrimeField> {
     party_id: usize,
     mac_key_share: F,
@@ -36,6 +54,30 @@ pub struct OtPreprocessing<F: PrimeField> {
     bit_buf: Vec<SpdzPrimeFieldShare<F>>,
     input_mask_buf: Vec<(F, SpdzPrimeFieldShare<F>)>,
     counter_mask_buf: Vec<SpdzPrimeFieldShare<F>>,
+    // Usage counters
+    triples_consumed: usize,
+    randoms_consumed: usize,
+    bits_consumed: usize,
+    input_masks_consumed: usize,
+    counter_masks_consumed: usize,
+    triples_prefilled: usize,
+    randoms_prefilled: usize,
+    bits_prefilled: usize,
+    input_masks_prefilled: usize,
+}
+
+/// Usage statistics for OT preprocessing.
+#[derive(Debug, Clone, Copy)]
+pub struct OtStats {
+    pub triples_consumed: usize,
+    pub triples_prefilled: usize,
+    pub randoms_consumed: usize,
+    pub randoms_prefilled: usize,
+    pub bits_consumed: usize,
+    pub bits_prefilled: usize,
+    pub input_masks_consumed: usize,
+    pub counter_masks_consumed: usize,
+    pub input_masks_prefilled: usize,
 }
 
 // Safety: used single-threaded per party
@@ -79,6 +121,15 @@ pub fn create_ot_preprocessing<F: PrimeField, N: Network>(
         bit_buf: Vec::new(),
         input_mask_buf: Vec::new(),
         counter_mask_buf: Vec::new(),
+        triples_consumed: 0,
+        randoms_consumed: 0,
+        bits_consumed: 0,
+        input_masks_consumed: 0,
+        counter_masks_consumed: 0,
+        triples_prefilled: 0,
+        randoms_prefilled: 0,
+        bits_prefilled: 0,
+        input_masks_prefilled: 0,
     }
 }
 
@@ -91,15 +142,31 @@ impl<F: PrimeField> OtPreprocessing<F> {
             let count = std::cmp::max(num_triples, BATCH_SIZE);
             let (triples, _) = (func)(ptr, count, self.party_id)
                 .expect("OT triple pre-generation failed");
+            self.triples_prefilled = triples.len();
             self.triple_buf = triples;
         }
-        // Also fill randoms, bits, masks
         self.refill_randoms();
+        self.randoms_prefilled = self.random_buf.len();
         self.refill_bits();
+        self.bits_prefilled = self.bit_buf.len();
         self.refill_input_masks();
-        // Clear network pointer — no more lazy generation
+        self.input_masks_prefilled = self.input_mask_buf.len() + self.counter_mask_buf.len();
         self.net_ptr = None;
         self.net_fn = None;
+    }
+
+    pub fn stats(&self) -> OtStats {
+        OtStats {
+            triples_consumed: self.triples_consumed,
+            triples_prefilled: self.triples_prefilled,
+            randoms_consumed: self.randoms_consumed,
+            randoms_prefilled: self.randoms_prefilled,
+            bits_consumed: self.bits_consumed,
+            bits_prefilled: self.bits_prefilled,
+            input_masks_consumed: self.input_masks_consumed,
+            counter_masks_consumed: self.counter_masks_consumed,
+            input_masks_prefilled: self.input_masks_prefilled,
+        }
     }
 
     fn refill_triples(&mut self) {
@@ -182,31 +249,50 @@ impl<F: PrimeField> SpdzPreprocessing<F> for OtPreprocessing<F> {
             bit_buf: Vec::new(),
             input_mask_buf: Vec::new(),
             counter_mask_buf: Vec::new(),
+            triples_consumed: 0,
+            randoms_consumed: 0,
+            bits_consumed: 0,
+            input_masks_consumed: 0,
+            counter_masks_consumed: 0,
+            triples_prefilled: 0,
+            randoms_prefilled: 0,
+            bits_prefilled: 0,
+            input_masks_prefilled: 0,
         }))
     }
 
     fn next_triple(&mut self) -> eyre::Result<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)> {
         if self.triple_buf.is_empty() { self.refill_triples(); }
+        self.triples_consumed += 1;
+        TRIPLES_CONSUMED.fetch_add(1, Ordering::Relaxed);
         Ok(self.triple_buf.pop().unwrap())
     }
 
     fn next_shared_random(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.random_buf.is_empty() { self.refill_randoms(); }
+        self.randoms_consumed += 1;
+        RANDOMS_CONSUMED.fetch_add(1, Ordering::Relaxed);
         Ok(self.random_buf.pop().unwrap())
     }
 
     fn next_shared_bit(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.bit_buf.is_empty() { self.refill_bits(); }
+        self.bits_consumed += 1;
+        BITS_CONSUMED.fetch_add(1, Ordering::Relaxed);
         Ok(self.bit_buf.pop().unwrap())
     }
 
     fn next_input_mask(&mut self) -> eyre::Result<(F, SpdzPrimeFieldShare<F>)> {
         if self.input_mask_buf.is_empty() { self.refill_input_masks(); }
+        self.input_masks_consumed += 1;
+        INPUT_MASKS_CONSUMED.fetch_add(1, Ordering::Relaxed);
         self.input_mask_buf.pop().ok_or_else(|| eyre::eyre!("No input masks"))
     }
 
     fn next_counterparty_input_mask(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
         if self.counter_mask_buf.is_empty() { self.refill_input_masks(); }
+        self.counter_masks_consumed += 1;
+        COUNTER_MASKS_CONSUMED.fetch_add(1, Ordering::Relaxed);
         self.counter_mask_buf.pop().ok_or_else(|| eyre::eyre!("No counterparty masks"))
     }
 }
