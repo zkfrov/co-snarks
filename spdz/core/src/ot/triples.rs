@@ -29,63 +29,86 @@ type KosSender = ocelot::ot::KosSender;
 /// KOS OT extension receiver.
 type KosReceiver = ocelot::ot::KosReceiver;
 
-/// Perform Gilboa OT multiplication using a pre-initialized KOS sender/receiver.
-/// Returns this party's additive share of x*y.
-fn gilboa_mul_with_kos<F: PrimeField>(
+/// BATCHED Gilboa OT multiplication — processes ALL values in ONE OT round trip.
+/// Instead of N sequential sender.send()/receiver.receive() calls (one per value),
+/// batches all N * field_bits OTs into a single call.
+fn gilboa_mul_batch<F: PrimeField>(
     party_id: usize,
-    my_value: F,
+    my_values: &[F],
     channel: &mut NetworkChannel<'_, impl Network>,
     kos_sender: &mut Option<KosSender>,
     kos_receiver: &mut Option<KosReceiver>,
     rng: &mut AesRng,
-) -> eyre::Result<F> {
+) -> eyre::Result<Vec<F>> {
     let field_bits = F::MODULUS_BIT_SIZE as usize;
+    let n = my_values.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
 
     if party_id == 0 {
         let sender = kos_sender.as_mut().expect("KOS sender not initialized");
 
-        let mut my_share = F::zero();
-        let mut pairs = Vec::with_capacity(2 * field_bits);
+        // Build all pairs for all values upfront
+        let mut pairs = Vec::with_capacity(2 * field_bits * n);
+        let mut my_shares = Vec::with_capacity(n);
 
-        let mut pow = F::one();
-        for _j in 0..field_bits {
-            let r_j = F::rand(rng);
-            let val0 = r_j;
-            let val1 = r_j + my_value * pow;
+        for my_value in my_values {
+            let mut my_share = F::zero();
+            let mut pow = F::one();
+            for _j in 0..field_bits {
+                let r_j = F::rand(rng);
+                let val0 = r_j;
+                let val1 = r_j + *my_value * pow;
 
-            let (lo0, hi0) = field_to_block_pair::<F>(val0);
-            let (lo1, hi1) = field_to_block_pair::<F>(val1);
-            pairs.push((lo0, lo1));
-            pairs.push((hi0, hi1));
+                let (lo0, hi0) = field_to_block_pair::<F>(val0);
+                let (lo1, hi1) = field_to_block_pair::<F>(val1);
+                pairs.push((lo0, lo1));
+                pairs.push((hi0, hi1));
 
-            my_share -= r_j;
-            pow.double_in_place();
+                my_share -= r_j;
+                pow.double_in_place();
+            }
+            my_shares.push(my_share);
         }
 
+        // ONE OT call for all N values
         sender.send(channel, &pairs, rng)
-            .map_err(|e| eyre::eyre!("KOS send: {:?}", e))?;
+            .map_err(|e| eyre::eyre!("KOS send (batch): {:?}", e))?;
 
-        Ok(my_share)
+        Ok(my_shares)
     } else {
         let receiver = kos_receiver.as_mut().expect("KOS receiver not initialized");
 
-        let y_big = my_value.into_bigint();
-        let mut choices = Vec::with_capacity(2 * field_bits);
-        for j in 0..field_bits {
-            let bit = y_big.get_bit(j as usize);
-            choices.push(bit);
-            choices.push(bit);
+        // Build all choices for all values upfront
+        let mut choices = Vec::with_capacity(2 * field_bits * n);
+        for my_value in my_values {
+            let y_big = my_value.into_bigint();
+            for j in 0..field_bits {
+                let bit = y_big.get_bit(j as usize);
+                choices.push(bit);
+                choices.push(bit);
+            }
         }
 
+        // ONE OT call for all N values
         let received = receiver.receive(channel, &choices, rng)
-            .map_err(|e| eyre::eyre!("KOS receive: {:?}", e))?;
+            .map_err(|e| eyre::eyre!("KOS receive (batch): {:?}", e))?;
 
-        let mut my_share = F::zero();
-        for chunk in received.chunks(2) {
-            my_share += block_pair_to_field::<F>(chunk[0], chunk[1]);
+        // Unpack into per-value shares
+        let mut my_shares = Vec::with_capacity(n);
+        let chunk_size = 2 * field_bits;
+        for i in 0..n {
+            let start = i * chunk_size;
+            let end = start + chunk_size;
+            let mut my_share = F::zero();
+            for chunk in received[start..end].chunks(2) {
+                my_share += block_pair_to_field::<F>(chunk[0], chunk[1]);
+            }
+            my_shares.push(my_share);
         }
 
-        Ok(my_share)
+        Ok(my_shares)
     }
 }
 
@@ -125,15 +148,13 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     let a_shares: Vec<F> = (0..count).map(|_| F::rand(&mut rng)).collect();
     let b_shares: Vec<F> = (0..count).map(|_| F::rand(&mut rng)).collect();
 
-    // Step 2: Cross-product round 1 (Party 0 sends a_i, Party 1 selects with b_i)
-    let mut cross1_shares = Vec::with_capacity(count);
-    for i in 0..count {
-        let my_val = if party_id == 0 { a_shares[i] } else { b_shares[i] };
-        let share = gilboa_mul_with_kos::<F>(
-            party_id, my_val, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-        )?;
-        cross1_shares.push(share);
-    }
+    // Step 2: Cross-product round 1 — BATCHED (all N values in one OT call)
+    let my_vals_r1: Vec<F> = (0..count)
+        .map(|i| if party_id == 0 { a_shares[i] } else { b_shares[i] })
+        .collect();
+    let cross1_shares = gilboa_mul_batch::<F>(
+        party_id, &my_vals_r1, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+    )?;
 
     // Step 3: Swap roles for cross-product round 2
     // Need to re-init KOS with swapped roles
@@ -150,14 +171,13 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
             .map_err(|e| eyre::eyre!("KOS sender init (round 2): {:?}", e))?);
     }
 
-    let mut cross2_shares = Vec::with_capacity(count);
-    for i in 0..count {
-        let my_val = if party_id == 0 { b_shares[i] } else { a_shares[i] };
-        let share = gilboa_mul_with_kos::<F>(
-            1 - party_id, my_val, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-        )?;
-        cross2_shares.push(share);
-    }
+    // Cross-product round 2 — BATCHED
+    let my_vals_r2: Vec<F> = (0..count)
+        .map(|i| if party_id == 0 { b_shares[i] } else { a_shares[i] })
+        .collect();
+    let cross2_shares = gilboa_mul_batch::<F>(
+        1 - party_id, &my_vals_r2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+    )?;
 
     // c_i = a_i*b_i + cross1_i + cross2_i
     let c_shares: Vec<F> = (0..count)
@@ -178,16 +198,14 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
             .map_err(|e| eyre::eyre!("KOS receiver init (MAC round 1): {:?}", e))?);
     }
 
-    // MAC round 1: Party 0 sends alpha_0, Party 1 selects with values
+    // MAC round 1: BATCHED (3N values in one OT call)
     let all_values: Vec<F> = a_shares.iter().chain(b_shares.iter()).chain(c_shares.iter()).copied().collect();
-    let mut mac_cross1 = Vec::with_capacity(3 * count);
-    for &v in &all_values {
-        let my_val = if party_id == 0 { mac_key_share } else { v };
-        let share = gilboa_mul_with_kos::<F>(
-            party_id, my_val, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-        )?;
-        mac_cross1.push(share);
-    }
+    let my_vals_mac1: Vec<F> = all_values.iter()
+        .map(|&v| if party_id == 0 { mac_key_share } else { v })
+        .collect();
+    let mac_cross1 = gilboa_mul_batch::<F>(
+        party_id, &my_vals_mac1, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+    )?;
 
     // MAC round 2: swap roles
     drop(kos_sender.take());
@@ -201,14 +219,13 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
             .map_err(|e| eyre::eyre!("KOS sender init (MAC round 2): {:?}", e))?);
     }
 
-    let mut mac_cross2 = Vec::with_capacity(3 * count);
-    for &v in &all_values {
-        let my_val = if party_id == 0 { v } else { mac_key_share };
-        let share = gilboa_mul_with_kos::<F>(
-            1 - party_id, my_val, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
-        )?;
-        mac_cross2.push(share);
-    }
+    // MAC round 2: BATCHED
+    let my_vals_mac2: Vec<F> = all_values.iter()
+        .map(|&v| if party_id == 0 { v } else { mac_key_share })
+        .collect();
+    let mac_cross2 = gilboa_mul_batch::<F>(
+        1 - party_id, &my_vals_mac2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+    )?;
 
     // Assemble triples with MACs
     let mut triples = Vec::with_capacity(count);
