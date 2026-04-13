@@ -160,27 +160,30 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     eprintln!("[OT] party {party_id} cross1 done: {:.2}s", t_cross.elapsed().as_secs_f64());
 
     // Step 3: Swap roles for cross-product round 2
-    // Need to re-init KOS with swapped roles
+    eprintln!("[OT] party {party_id} KOS init round 2 (swapped roles)...");
+    let t = std::time::Instant::now();
     drop(kos_sender.take());
     drop(kos_receiver.take());
 
     if party_id == 0 {
-        // Party 0 is now receiver
         kos_receiver = Some(KosReceiver::init(&mut channel, &mut rng)
             .map_err(|e| eyre::eyre!("KOS receiver init (round 2): {:?}", e))?);
     } else {
-        // Party 1 is now sender
         kos_sender = Some(KosSender::init(&mut channel, &mut rng)
             .map_err(|e| eyre::eyre!("KOS sender init (round 2): {:?}", e))?);
     }
+    eprintln!("[OT] party {party_id} KOS init round 2: {:.2}s", t.elapsed().as_secs_f64());
 
     // Cross-product round 2 — BATCHED
+    eprintln!("[OT] party {party_id} cross2 batched...");
+    let t = std::time::Instant::now();
     let my_vals_r2: Vec<F> = (0..count)
         .map(|i| if party_id == 0 { b_shares[i] } else { a_shares[i] })
         .collect();
     let cross2_shares = gilboa_mul_batch::<F>(
         1 - party_id, &my_vals_r2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
     )?;
+    eprintln!("[OT] party {party_id} cross2 done: {:.2}s", t.elapsed().as_secs_f64());
 
     // c_i = a_i*b_i + cross1_i + cross2_i
     let c_shares: Vec<F> = (0..count)
