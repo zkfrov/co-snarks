@@ -130,24 +130,26 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     let mut rng = AesRng::from_seed(rand::random());
     let mut channel = NetworkChannel::new(net);
 
-    // Step 1: Initialize KOS OT extension ONCE
-    // This does 128 Chou-Orlandi base OTs, then all further OTs are cheap.
+    eprintln!("[OT] party {party_id} KOS init round 1...");
+    let t = std::time::Instant::now();
     let mut kos_sender: Option<KosSender> = None;
     let mut kos_receiver: Option<KosReceiver> = None;
 
     if party_id == 0 {
-        // Party 0 starts as sender for cross-product round 1
         kos_sender = Some(KosSender::init(&mut channel, &mut rng)
             .map_err(|e| eyre::eyre!("KOS sender init: {:?}", e))?);
     } else {
         kos_receiver = Some(KosReceiver::init(&mut channel, &mut rng)
             .map_err(|e| eyre::eyre!("KOS receiver init: {:?}", e))?);
     }
+    eprintln!("[OT] party {party_id} KOS init round 1: {:.2}s", t.elapsed().as_secs_f64());
 
     let mac_key_share = F::rand(&mut rng);
     let a_shares: Vec<F> = (0..count).map(|_| F::rand(&mut rng)).collect();
     let b_shares: Vec<F> = (0..count).map(|_| F::rand(&mut rng)).collect();
 
+    eprintln!("[OT] party {party_id} cross1 batched ({count} values)...");
+    let t_cross = std::time::Instant::now();
     // Step 2: Cross-product round 1 — BATCHED (all N values in one OT call)
     let my_vals_r1: Vec<F> = (0..count)
         .map(|i| if party_id == 0 { a_shares[i] } else { b_shares[i] })
@@ -155,6 +157,7 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     let cross1_shares = gilboa_mul_batch::<F>(
         party_id, &my_vals_r1, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
     )?;
+    eprintln!("[OT] party {party_id} cross1 done: {:.2}s", t_cross.elapsed().as_secs_f64());
 
     // Step 3: Swap roles for cross-product round 2
     // Need to re-init KOS with swapped roles
