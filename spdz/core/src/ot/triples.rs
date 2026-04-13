@@ -159,29 +159,15 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     )?;
     eprintln!("[OT] party {party_id} cross1 done: {:.2}s", t_cross.elapsed().as_secs_f64());
 
-    // Step 3: Swap roles for cross-product round 2
-    eprintln!("[OT] party {party_id} KOS init round 2 (swapped roles)...");
-    let t = std::time::Instant::now();
-    drop(kos_sender.take());
-    drop(kos_receiver.take());
-
-    if party_id == 0 {
-        kos_receiver = Some(KosReceiver::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS receiver init (round 2): {:?}", e))?);
-    } else {
-        kos_sender = Some(KosSender::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS sender init (round 2): {:?}", e))?);
-    }
-    eprintln!("[OT] party {party_id} KOS init round 2: {:.2}s", t.elapsed().as_secs_f64());
-
-    // Cross-product round 2 — BATCHED
-    eprintln!("[OT] party {party_id} cross2 batched...");
+    // Step 3: Cross-product round 2 — REUSE same KOS (no role swap).
+    // For cross2 we want party 1's a * party 0's b. Same KOS roles, swapped VALUES.
+    eprintln!("[OT] party {party_id} cross2 batched (same KOS)...");
     let t = std::time::Instant::now();
     let my_vals_r2: Vec<F> = (0..count)
         .map(|i| if party_id == 0 { b_shares[i] } else { a_shares[i] })
         .collect();
     let cross2_shares = gilboa_mul_batch::<F>(
-        1 - party_id, &my_vals_r2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+        party_id, &my_vals_r2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
     )?;
     eprintln!("[OT] party {party_id} cross2 done: {:.2}s", t.elapsed().as_secs_f64());
 
@@ -190,21 +176,10 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
         .map(|i| a_shares[i] * b_shares[i] + cross1_shares[i] + cross2_shares[i])
         .collect();
 
-    // Step 4: MAC authentication via Gilboa OT
-    // For each value, need two cross terms: alpha_i * v_j and alpha_j * v_i
-    // Re-init KOS for MAC rounds (Party 0 sends alpha_0 first)
-    drop(kos_sender.take());
-    drop(kos_receiver.take());
-
-    if party_id == 0 {
-        kos_sender = Some(KosSender::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS sender init (MAC round 1): {:?}", e))?);
-    } else {
-        kos_receiver = Some(KosReceiver::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS receiver init (MAC round 1): {:?}", e))?);
-    }
-
-    // MAC round 1: BATCHED (3N values in one OT call)
+    // Step 4: MAC authentication via Gilboa OT — reuse SAME KOS instance.
+    // MAC round 1: party 0 uses alpha_0, party 1 uses v (values need MACing)
+    eprintln!("[OT] party {party_id} mac1 batched...");
+    let t = std::time::Instant::now();
     let all_values: Vec<F> = a_shares.iter().chain(b_shares.iter()).chain(c_shares.iter()).copied().collect();
     let my_vals_mac1: Vec<F> = all_values.iter()
         .map(|&v| if party_id == 0 { mac_key_share } else { v })
@@ -212,26 +187,18 @@ pub fn generate_triples_via_ot<F: PrimeField, N: Network>(
     let mac_cross1 = gilboa_mul_batch::<F>(
         party_id, &my_vals_mac1, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
     )?;
+    eprintln!("[OT] party {party_id} mac1 done: {:.2}s", t.elapsed().as_secs_f64());
 
-    // MAC round 2: swap roles
-    drop(kos_sender.take());
-    drop(kos_receiver.take());
-
-    if party_id == 0 {
-        kos_receiver = Some(KosReceiver::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS receiver init (MAC round 2): {:?}", e))?);
-    } else {
-        kos_sender = Some(KosSender::init(&mut channel, &mut rng)
-            .map_err(|e| eyre::eyre!("KOS sender init (MAC round 2): {:?}", e))?);
-    }
-
-    // MAC round 2: BATCHED
+    // MAC round 2: values swapped — party 0 uses v, party 1 uses alpha_1
+    eprintln!("[OT] party {party_id} mac2 batched...");
+    let t = std::time::Instant::now();
     let my_vals_mac2: Vec<F> = all_values.iter()
         .map(|&v| if party_id == 0 { v } else { mac_key_share })
         .collect();
     let mac_cross2 = gilboa_mul_batch::<F>(
-        1 - party_id, &my_vals_mac2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
+        party_id, &my_vals_mac2, &mut channel, &mut kos_sender, &mut kos_receiver, &mut rng,
     )?;
+    eprintln!("[OT] party {party_id} mac2 done: {:.2}s", t.elapsed().as_secs_f64());
 
     // Assemble triples with MACs
     let mut triples = Vec::with_capacity(count);
