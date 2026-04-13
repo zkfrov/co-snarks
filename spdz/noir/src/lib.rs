@@ -25,6 +25,18 @@ use noir_types::HonkProof;
 use spdz_core::preprocessing::SpdzPreprocessing;
 use spdz_core::SpdzState;
 
+/// Register the ACVM profile hook with spdz-core's profiler.
+/// Called once on first invocation of generate_proving_key_spdz or prove_*.
+fn install_profile_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        co_acvm::solver::profile_hook::set_callback(Box::new(|tag: Option<&str>| {
+            spdz_core::profiling::set_tag(tag.unwrap_or(""));
+        }));
+    });
+}
+
 pub type SpdzProvingKey<P> = ProvingKey<SpdzUltraHonkDriver, P>;
 pub type SpdzCoUltraHonk<P, H> = CoUltraHonk<SpdzUltraHonkDriver, P, H>;
 pub type SpdzCoBuilder<'a, P, N> = GenericUltraCircuitBuilder<
@@ -55,6 +67,8 @@ pub fn generate_proving_key_spdz_with_options<N: Network>(
     prover_crs: &ProverCrs<Bn254G1>,
     semi_honest: bool,
 ) -> eyre::Result<SpdzProvingKey<Bn254G1>> {
+    install_profile_hook();
+    let _pk_tag = spdz_core::profiling::TagGuard::new("pk_gen");
     let mut state = if semi_honest {
         SpdzState::new_semi_honest(net.id(), preprocessing)
     } else {
@@ -140,6 +154,8 @@ pub fn prove_spdz_with_options<
     verifying_key: &VerifyingKeyBarretenberg<C>,
     semi_honest: bool,
 ) -> eyre::Result<(HonkProof<H::DataType>, Vec<H::DataType>)> {
+    install_profile_hook();
+    let _prove_tag = spdz_core::profiling::TagGuard::new("prove");
     let mut state = if semi_honest {
         SpdzState::new_semi_honest(net.id(), preprocessing)
     } else {

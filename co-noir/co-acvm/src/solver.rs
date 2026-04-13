@@ -28,6 +28,75 @@ use crate::{
 
 mod assert_zero_solver;
 mod blackbox_solver;
+
+/// Profiling tag for a given opcode. Uses a compile-time-optional hook so
+/// this file doesn't have to depend on spdz-core (tag is set via a simple
+/// process-wide singleton when the feature is enabled downstream).
+fn spdz_profile_tag_for<F: PrimeField>(opcode: &Opcode<GenericFieldElement<F>>) -> ProfileTag {
+    let name: String = match opcode {
+        Opcode::AssertZero(_) => "AssertZero".into(),
+        Opcode::MemoryInit { .. } => "MemoryInit".into(),
+        Opcode::MemoryOp { .. } => "MemoryOp".into(),
+        Opcode::BlackBoxFuncCall(bb) => format!("BlackBox::{}", bb.name()),
+        Opcode::BrilligCall { .. } => "BrilligCall".into(),
+        other => format!("Other::{}", other),
+    };
+    ProfileTag::set(name)
+}
+
+/// RAII tag. `Drop` restores the previous tag.
+pub struct ProfileTag {
+    prev: Option<String>,
+}
+
+impl ProfileTag {
+    pub fn set(tag: String) -> Self {
+        let prev = profile_hook::swap(Some(tag));
+        Self { prev }
+    }
+}
+
+impl Drop for ProfileTag {
+    fn drop(&mut self) {
+        profile_hook::swap(std::mem::take(&mut self.prev));
+    }
+}
+
+/// Process-wide profile hook. Downstream crates (e.g. spdz-core) register a
+/// callback via [`profile_hook::set_callback`] to receive tag changes.
+pub mod profile_hook {
+    use std::sync::{Mutex, OnceLock};
+
+    type Callback = Box<dyn Fn(Option<&str>) + Send + Sync>;
+    static CALLBACK: OnceLock<Mutex<Option<Callback>>> = OnceLock::new();
+    static CURRENT: Mutex<Option<String>> = Mutex::new(None);
+
+    fn slot() -> &'static Mutex<Option<Callback>> {
+        CALLBACK.get_or_init(|| Mutex::new(None))
+    }
+
+    /// Register a callback invoked whenever the current profile tag changes.
+    /// Intended for at-startup registration.
+    pub fn set_callback(cb: Callback) {
+        *slot().lock().unwrap() = Some(cb);
+    }
+
+    /// Set the current tag. Returns the previous.
+    pub fn swap(new: Option<String>) -> Option<String> {
+        let mut g = CURRENT.lock().unwrap();
+        let prev = g.take();
+        *g = new.clone();
+        if let Some(cb) = slot().lock().unwrap().as_ref() {
+            cb(new.as_deref());
+        }
+        prev
+    }
+
+    /// Read the current tag.
+    pub fn current() -> Option<String> {
+        CURRENT.lock().unwrap().clone()
+    }
+}
 mod brillig_call_solver;
 mod memory_solver;
 
@@ -334,6 +403,7 @@ where
         let functions = std::mem::take(&mut self.functions);
 
         for opcode in functions[self.function_index].opcodes.iter() {
+            let _tag = spdz_profile_tag_for(opcode);
             match opcode {
                 Opcode::AssertZero(expr) => self.solve_assert_zero(expr)?,
                 Opcode::MemoryInit {

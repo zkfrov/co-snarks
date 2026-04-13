@@ -377,6 +377,7 @@ impl<F: PrimeField> SpdzPreprocessing<F> for OtPreprocessing<F> {
         if self.triple_buf.is_empty() { self.refill_triples(); }
         self.triples_consumed += 1;
         TRIPLES_CONSUMED.fetch_add(1, Ordering::Relaxed);
+        crate::profiling::record_triples(1);
         Ok(self.triple_buf.pop().unwrap())
     }
 

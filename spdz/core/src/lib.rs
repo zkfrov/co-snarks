@@ -4,6 +4,7 @@ pub mod mac;
 pub mod network;
 pub mod ot;
 pub mod preprocessing;
+pub mod profiling;
 pub mod types;
 
 pub use types::{SpdzPointShare, SpdzPrimeFieldShare};

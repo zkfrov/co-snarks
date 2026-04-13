@@ -220,6 +220,7 @@ impl<F: PrimeField> SpdzPreprocessing<F> for DummyPreprocessing<F> {
     fn next_triple(
         &mut self,
     ) -> eyre::Result<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)> {
+        crate::profiling::record_triples(1);
         self.triples
             .pop()
             .ok_or_else(|| eyre::eyre!("Ran out of preprocessing triples"))
@@ -435,6 +436,7 @@ impl<F: PrimeField> SpdzPreprocessing<F> for LazyDummyPreprocessing<F> {
     fn next_triple(&mut self) -> eyre::Result<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)> {
         if self.triple_buf.is_empty() { self.refill_triples(); }
         DUMMY_TRIPLES_USED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::profiling::record_triples(1);
         Ok(self.triple_buf.pop().unwrap())
     }
 
