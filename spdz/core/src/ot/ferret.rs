@@ -44,6 +44,11 @@ use std::sync::Arc;
 use super::async_io::SyncToAsyncIo;
 use crate::types::SpdzPrimeFieldShare;
 
+/// Chunk size in VALUES for Gilboa. With 254-bit BN254 Fr and 32-byte
+/// serialized field elements, each chunk sends ~4096*254*32 = 33MB of τ,
+/// well under the 256MB WS max frame.
+const GILBOA_CHUNK: usize = 4096;
+
 /// Ferret sender built on ideal-RCOT bootstrap.
 type Sender = FerretSender<IdealRCOTSender>;
 /// Ferret receiver built on ideal-RCOT bootstrap.
@@ -173,6 +178,18 @@ fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
     net: &N,
     x_values: &[F],
 ) -> eyre::Result<Vec<F>> {
+    let mut out = Vec::with_capacity(x_values.len());
+    for chunk in x_values.chunks(GILBOA_CHUNK) {
+        out.extend(gilboa_send_chunk(session, net, chunk)?);
+    }
+    Ok(out)
+}
+
+fn gilboa_send_chunk<F: PrimeField, N: Network + Unpin + 'static>(
+    session: &mut FerretSession<N>,
+    net: &N,
+    x_values: &[F],
+) -> eyre::Result<Vec<F>> {
     let field_bits = F::MODULUS_BIT_SIZE as usize;
     let n = x_values.len();
     if n == 0 {
@@ -230,6 +247,18 @@ fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
 }
 
 fn gilboa_recv<F: PrimeField, N: Network + Unpin + 'static>(
+    session: &mut FerretSession<N>,
+    net: &N,
+    y_values: &[F],
+) -> eyre::Result<Vec<F>> {
+    let mut out = Vec::with_capacity(y_values.len());
+    for chunk in y_values.chunks(GILBOA_CHUNK) {
+        out.extend(gilboa_recv_chunk(session, net, chunk)?);
+    }
+    Ok(out)
+}
+
+fn gilboa_recv_chunk<F: PrimeField, N: Network + Unpin + 'static>(
     session: &mut FerretSession<N>,
     net: &N,
     y_values: &[F],
