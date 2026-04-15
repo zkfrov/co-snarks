@@ -4688,6 +4688,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "spdz-pcg"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ff 0.5.0",
+ "ark-poly",
+ "ark-serialize 0.5.0",
+ "ark-std 0.5.0",
+ "criterion",
+ "eyre",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "spdz-core",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

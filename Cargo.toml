@@ -21,6 +21,7 @@ members = [
     "spdz/acvm",
     "spdz/ultrahonk",
     "spdz/noir",
+    "spdz/pcg",
     "tests",
 ]
 resolver = "2"
