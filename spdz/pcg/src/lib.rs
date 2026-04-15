@@ -20,9 +20,13 @@
 //!   validates the expansion math. Real DMPF comes in Phase 1c.
 
 pub mod pcg;
+pub mod preprocessing;
 pub mod sparse;
+pub mod triples;
 
 pub use pcg::{PcgParams, PcgSeed, Role};
+pub use preprocessing::PcgPreprocessing;
+pub use triples::{ole_to_beaver_triples, BeaverTripleShare};
 
 /// Default parameters for BN254: ~1M OLEs with moderate security.
 /// These should be reviewed against the LPN security estimator before use.

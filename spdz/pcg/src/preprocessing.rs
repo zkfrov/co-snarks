@@ -1,0 +1,236 @@
+//! SpdzPreprocessing adapter backed by the PCG.
+//!
+//! Triples come from the PCG's OLE expansion. Shared randoms, bits, and input
+//! masks use the same trusted-dealer construction as `DummyPreprocessing`
+//! (not on the critical path for demonstrating PCG; easy to replace later
+//! with dedicated correlation generators).
+
+use crate::pcg::{PcgParams, PcgSeed, Role};
+use crate::triples::{ole_to_beaver_triples, BeaverTripleShare};
+use ark_ff::PrimeField;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use spdz_core::preprocessing::SpdzPreprocessing;
+use spdz_core::SpdzPrimeFieldShare;
+
+/// Triples per expansion batch. Each expansion produces N=2^log_n OLEs →
+/// N/2 triples.
+const DEFAULT_LOG_N: usize = 16; // 2^16 = 65536 OLEs per batch → 32768 triples
+
+pub struct PcgPreprocessing<F: PrimeField + ark_ff::FftField> {
+    party_id: usize,
+    role: Role,
+    mac_key_share: F,
+    mac_key: F, // Known in MVP (trusted-dealer style)
+    rng: ChaCha20Rng,
+
+    // Current batch of triples pulled from the most-recent expansion
+    triple_buf: Vec<BeaverTripleShare<F>>,
+    // Seeds for producing the next batch when triple_buf empties
+    my_seed: Option<PcgSeed<F>>,
+
+    // Non-triple material (trusted-dealer style for MVP)
+    random_buf: Vec<SpdzPrimeFieldShare<F>>,
+    bit_buf: Vec<SpdzPrimeFieldShare<F>>,
+    input_mask_buf: Vec<(F, SpdzPrimeFieldShare<F>)>,
+    counter_mask_buf: Vec<SpdzPrimeFieldShare<F>>,
+
+    params: PcgParams,
+    // Counter used to produce fresh seeds for successive batches (MVP only —
+    // real PCG has a single seed that gets fully consumed).
+    batch_counter: u64,
+    // Shared rng seed across both parties, so dummy correlations match up.
+    shared_seed: u64,
+}
+
+unsafe impl<F: PrimeField + ark_ff::FftField> Send for PcgPreprocessing<F> {}
+
+impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
+    /// Create a PCG-backed preprocessing source for MVP testing.
+    ///
+    /// Both parties should call this with the SAME `shared_seed` but different
+    /// `party_id`. The seed drives both the trusted-dealer dummy correlations
+    /// (randoms/bits/masks) and the PCG seed pair generation.
+    pub fn new_insecure(party_id: usize, shared_seed: u64, log_n: usize) -> Self {
+        assert!(party_id == 0 || party_id == 1);
+        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
+        let params = PcgParams { log_n };
+
+        // Derive a MAC key from the shared seed (same on both parties).
+        let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
+        let mac_key = F::rand(&mut seed_rng);
+        // Split MAC key additively.
+        let mk0 = F::rand(&mut seed_rng);
+        let mk1 = mac_key - mk0;
+        let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
+
+        // Per-party RNG: includes the party id so each party's private ops differ.
+        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
+
+        Self {
+            party_id,
+            role,
+            mac_key_share,
+            mac_key,
+            rng,
+            triple_buf: Vec::new(),
+            my_seed: None,
+            random_buf: Vec::new(),
+            bit_buf: Vec::new(),
+            input_mask_buf: Vec::new(),
+            counter_mask_buf: Vec::new(),
+            params,
+            batch_counter: 0,
+            shared_seed,
+        }
+    }
+
+    fn refill_triples(&mut self) {
+        // Generate a fresh PCG seed pair deterministically (both parties derive
+        // the same batch seed from shared_seed + batch_counter).
+        let batch_seed = self
+            .shared_seed
+            .wrapping_add(0xA11CE * (self.batch_counter + 1));
+        let (p0, p1) = PcgSeed::<F>::gen_pair_insecure(self.params.clone(), batch_seed);
+        let my_seed = if self.party_id == 0 { p0 } else { p1 };
+        let ole = my_seed.expand();
+        let triples = ole_to_beaver_triples(&ole, self.role);
+        self.triple_buf = triples;
+        self.batch_counter += 1;
+    }
+
+    fn make_share(&mut self, val: F) -> SpdzPrimeFieldShare<F> {
+        // Trusted-dealer split: derive both shares from shared rng and take ours.
+        let s0 = F::rand(&mut self.rng);
+        let s1 = val - s0;
+        let mac = self.mac_key * val;
+        let m0 = F::rand(&mut self.rng);
+        let m1 = mac - m0;
+        if self.party_id == 0 {
+            SpdzPrimeFieldShare::new(s0, m0)
+        } else {
+            SpdzPrimeFieldShare::new(s1, m1)
+        }
+    }
+
+    fn refill_randoms(&mut self) {
+        for _ in 0..4096 {
+            let v = F::rand(&mut self.rng);
+            let share = self.make_share(v);
+            self.random_buf.push(share);
+        }
+    }
+
+    fn refill_bits(&mut self) {
+        for _ in 0..4096 {
+            let coin: bool = self.rng.r#gen();
+            let v = if coin { F::one() } else { F::zero() };
+            let share = self.make_share(v);
+            self.bit_buf.push(share);
+        }
+    }
+
+    fn refill_input_masks(&mut self) {
+        for _ in 0..2048 {
+            let r = F::rand(&mut self.rng);
+            let s = self.make_share(r);
+            if self.party_id == 0 {
+                self.input_mask_buf.push((r, s));
+            } else {
+                self.counter_mask_buf.push(s);
+            }
+        }
+        for _ in 0..2048 {
+            let r = F::rand(&mut self.rng);
+            let s = self.make_share(r);
+            if self.party_id == 1 {
+                self.input_mask_buf.push((r, s));
+            } else {
+                self.counter_mask_buf.push(s);
+            }
+        }
+    }
+}
+
+impl<F: PrimeField + ark_ff::FftField> SpdzPreprocessing<F> for PcgPreprocessing<F> {
+    fn mac_key_share(&self) -> F {
+        self.mac_key_share
+    }
+
+    fn next_triple(
+        &mut self,
+    ) -> eyre::Result<(SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>, SpdzPrimeFieldShare<F>)> {
+        if self.triple_buf.is_empty() {
+            self.refill_triples();
+        }
+        let t = self.triple_buf.pop().unwrap();
+        // In mac-free mode, mac field is ignored. Fill with zero.
+        let zero = F::zero();
+        Ok((
+            SpdzPrimeFieldShare::new(t.a, zero),
+            SpdzPrimeFieldShare::new(t.b, zero),
+            SpdzPrimeFieldShare::new(t.c, zero),
+        ))
+    }
+
+    fn next_shared_random(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
+        if self.random_buf.is_empty() {
+            self.refill_randoms();
+        }
+        Ok(self.random_buf.pop().unwrap())
+    }
+
+    fn next_shared_bit(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
+        if self.bit_buf.is_empty() {
+            self.refill_bits();
+        }
+        Ok(self.bit_buf.pop().unwrap())
+    }
+
+    fn next_input_mask(&mut self) -> eyre::Result<(F, SpdzPrimeFieldShare<F>)> {
+        if self.input_mask_buf.is_empty() {
+            self.refill_input_masks();
+        }
+        Ok(self.input_mask_buf.pop().unwrap())
+    }
+
+    fn next_counterparty_input_mask(&mut self) -> eyre::Result<SpdzPrimeFieldShare<F>> {
+        if self.counter_mask_buf.is_empty() {
+            self.refill_input_masks();
+        }
+        Ok(self.counter_mask_buf.pop().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bn254::Fr;
+    use spdz_core::types::combine_field_element;
+
+    #[test]
+    fn test_pcg_preprocessing_triples() {
+        let mut p0 = PcgPreprocessing::<Fr>::new_insecure(0, 42, 10);
+        let mut p1 = PcgPreprocessing::<Fr>::new_insecure(1, 42, 10);
+
+        // Get 100 triples from each party
+        for i in 0..100 {
+            let (a0, b0, c0) = p0.next_triple().unwrap();
+            let (a1, b1, c1) = p1.next_triple().unwrap();
+
+            let a = combine_field_element(a0, a1);
+            let b = combine_field_element(b0, b1);
+            let c = combine_field_element(c0, c1);
+            assert_eq!(a * b, c, "triple {i} failed the Beaver relation");
+        }
+    }
+
+    #[test]
+    fn test_pcg_preprocessing_mac_key() {
+        let p0 = PcgPreprocessing::<Fr>::new_insecure(0, 42, 10);
+        let p1 = PcgPreprocessing::<Fr>::new_insecure(1, 42, 10);
+        // MAC key shares should sum to the shared MAC key
+        assert_eq!(p0.mac_key_share() + p1.mac_key_share(), p0.mac_key);
+        assert_eq!(p0.mac_key, p1.mac_key);
+    }
+}
