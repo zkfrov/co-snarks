@@ -6,8 +6,10 @@
 //! with dedicated correlation generators).
 
 use crate::pcg::{PcgParams, PcgSeed, Role};
+use crate::protocol::OleProtocol;
 use crate::triples::{ole_to_beaver_triples, BeaverTripleShare};
 use ark_ff::PrimeField;
+use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use spdz_core::preprocessing::SpdzPreprocessing;
@@ -21,13 +23,13 @@ pub struct PcgPreprocessing<F: PrimeField + ark_ff::FftField> {
     party_id: usize,
     role: Role,
     mac_key_share: F,
-    mac_key: F, // Known in MVP (trusted-dealer style)
+    /// Only populated in `new_insecure` mode; in protocol mode we just hold the
+    /// share. Used by `test_pcg_preprocessing_mac_key` to sanity-check.
+    pub(crate) mac_key: F,
     rng: ChaCha20Rng,
 
     // Current batch of triples pulled from the most-recent expansion
     triple_buf: Vec<BeaverTripleShare<F>>,
-    // Seeds for producing the next batch when triple_buf empties
-    my_seed: Option<PcgSeed<F>>,
 
     // Non-triple material (trusted-dealer style for MVP)
     random_buf: Vec<SpdzPrimeFieldShare<F>>,
@@ -36,11 +38,17 @@ pub struct PcgPreprocessing<F: PrimeField + ark_ff::FftField> {
     counter_mask_buf: Vec<SpdzPrimeFieldShare<F>>,
 
     params: PcgParams,
-    // Counter used to produce fresh seeds for successive batches (MVP only —
-    // real PCG has a single seed that gets fully consumed).
     batch_counter: u64,
-    // Shared rng seed across both parties, so dummy correlations match up.
     shared_seed: u64,
+
+    /// Real 2-party protocol for computing c shares. If present, `refill_triples`
+    /// uses it (Phase 2a+ mode). If None, uses the legacy trusted-dealer seed
+    /// derivation from `shared_seed` (insecure MVP mode).
+    protocol: Option<Box<dyn OleProtocol<F>>>,
+
+    /// This party's private RNG for generating its own `a` polynomial each
+    /// batch in protocol mode. Only used when `protocol.is_some()`.
+    private_poly_rng: ChaCha20Rng,
 }
 
 unsafe impl<F: PrimeField + ark_ff::FftField> Send for PcgPreprocessing<F> {}
@@ -74,7 +82,6 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             mac_key,
             rng,
             triple_buf: Vec::new(),
-            my_seed: None,
             random_buf: Vec::new(),
             bit_buf: Vec::new(),
             input_mask_buf: Vec::new(),
@@ -82,10 +89,91 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             params,
             batch_counter: 0,
             shared_seed,
+            protocol: None,
+            private_poly_rng: ChaCha20Rng::seed_from_u64(shared_seed ^ 0xBEEF),
+        }
+    }
+
+    /// Phase 2a constructor: uses a real 2-party OLE protocol for triple
+    /// generation. Each party calls this with its own `private_seed` (unknown
+    /// to the peer) plus a `protocol` that coordinates with the peer.
+    ///
+    /// `shared_seed` is only used for the non-triple correlations (shared
+    /// randoms, bits, input masks), which still use the trusted-dealer MVP
+    /// in this phase.
+    pub fn new_with_protocol(
+        party_id: usize,
+        private_seed: u64,
+        shared_seed: u64,
+        log_n: usize,
+        protocol: Box<dyn OleProtocol<F>>,
+    ) -> Self {
+        assert!(party_id == 0 || party_id == 1);
+        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
+        let params = PcgParams { log_n };
+
+        // MAC key shares still come from shared_seed (non-triple path).
+        let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
+        let mac_key = F::rand(&mut seed_rng);
+        let mk0 = F::rand(&mut seed_rng);
+        let mk1 = mac_key - mk0;
+        let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
+
+        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
+
+        Self {
+            party_id,
+            role,
+            mac_key_share,
+            mac_key,
+            rng,
+            triple_buf: Vec::new(),
+            random_buf: Vec::new(),
+            bit_buf: Vec::new(),
+            input_mask_buf: Vec::new(),
+            counter_mask_buf: Vec::new(),
+            params,
+            batch_counter: 0,
+            shared_seed,
+            protocol: Some(protocol),
+            private_poly_rng: ChaCha20Rng::seed_from_u64(private_seed),
         }
     }
 
     fn refill_triples(&mut self) {
+        if self.protocol.is_some() {
+            self.refill_triples_via_protocol();
+        } else {
+            self.refill_triples_trusted_dealer();
+        }
+    }
+
+    fn refill_triples_via_protocol(&mut self) {
+        let n = self.params.n();
+        // Generate my own private `a` polynomial from the private RNG.
+        let my_a: Vec<F> = (0..n).map(|_| F::rand(&mut self.private_poly_rng)).collect();
+
+        // Call the protocol to get my share of c = a_0 * a_1 (cyclic).
+        let log_n = self.params.log_n;
+        let protocol = self.protocol.as_mut().expect("protocol must be set");
+        let my_c = protocol
+            .cyclic_conv_share(&my_a, log_n)
+            .expect("OLE protocol failed");
+
+        // Assemble a PcgSeed with my own (a, c) and expand to OLE correlations.
+        let seed = PcgSeed::<F> {
+            role: self.role,
+            params: self.params.clone(),
+            a: my_a,
+            c: my_c,
+        };
+        let ole = seed.expand();
+        let triples = ole_to_beaver_triples(&ole, self.role);
+        self.triple_buf = triples;
+        self.batch_counter += 1;
+    }
+
+    fn refill_triples_trusted_dealer(&mut self) {
         // Generate a fresh PCG seed pair deterministically (both parties derive
         // the same batch seed from shared_seed + batch_counter).
         let batch_seed = self

@@ -8,7 +8,7 @@ use rand::SeedableRng;
 use spdz_core::arithmetic::{mul, open};
 use spdz_core::types::share_field_element;
 use spdz_core::SpdzState;
-use spdz_pcg::PcgPreprocessing;
+use spdz_pcg::{MockOleProtocol, PcgPreprocessing};
 
 #[test]
 fn pcg_preprocessing_drives_spdz_mul() {
@@ -104,4 +104,62 @@ fn pcg_preprocessing_drives_multiple_muls() {
         assert_eq!(r0[i], expected[i], "p0 mul {i}");
         assert_eq!(r1[i], expected[i], "p1 mul {i}");
     }
+}
+
+/// Phase 2a.0: PcgPreprocessing driven by a real 2-party OLE protocol
+/// (MockOleProtocol). Each party has a private seed; the shared seed is only
+/// used for the non-triple trusted-dealer correlations (mac key, etc.).
+#[test]
+fn pcg_preprocessing_with_mock_protocol() {
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
+    let shared_seed: u64 = 100;
+
+    // Each party has a DIFFERENT private seed. The peer does NOT know it.
+    let p0_private_seed: u64 = 777;
+    let p1_private_seed: u64 = 888;
+
+    // Build a mock OLE protocol pair.
+    let (proto0, proto1) = MockOleProtocol::<Fr>::new_pair(0xCAFE);
+
+    let p0_prep = PcgPreprocessing::<Fr>::new_with_protocol(
+        0,
+        p0_private_seed,
+        shared_seed,
+        10,
+        Box::new(proto0),
+    );
+    let p1_prep = PcgPreprocessing::<Fr>::new_with_protocol(
+        1,
+        p1_private_seed,
+        shared_seed,
+        10,
+        Box::new(proto1),
+    );
+
+    // Multiply a few random values.
+    let a = Fr::rand(&mut rng);
+    let b = Fr::rand(&mut rng);
+    let [a0, a1] = share_field_element(a, Fr::zero(), &mut rng);
+    let [b0, b1] = share_field_element(b, Fr::zero(), &mut rng);
+
+    let networks = LocalNetwork::new(2);
+    let mut nets = networks.into_iter();
+    let net0 = nets.next().unwrap();
+    let net1 = nets.next().unwrap();
+
+    let h0 = std::thread::spawn(move || {
+        let mut state = SpdzState::new_mac_free(0, Box::new(p0_prep));
+        let c = mul(&a0, &b0, &net0, &mut state).unwrap();
+        open(&c, &net0, None).unwrap()
+    });
+    let h1 = std::thread::spawn(move || {
+        let mut state = SpdzState::new_mac_free(1, Box::new(p1_prep));
+        let c = mul(&a1, &b1, &net1, &mut state).unwrap();
+        open(&c, &net1, None).unwrap()
+    });
+
+    let r0 = h0.join().unwrap();
+    let r1 = h1.join().unwrap();
+    assert_eq!(r0, a * b);
+    assert_eq!(r1, a * b);
 }

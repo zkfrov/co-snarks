@@ -21,11 +21,13 @@
 
 pub mod pcg;
 pub mod preprocessing;
+pub mod protocol;
 pub mod sparse;
 pub mod triples;
 
 pub use pcg::{PcgParams, PcgSeed, Role};
 pub use preprocessing::PcgPreprocessing;
+pub use protocol::{MockOleProtocol, OleProtocol};
 pub use triples::{ole_to_beaver_triples, BeaverTripleShare};
 
 /// Default parameters for BN254: ~1M OLEs with moderate security.
