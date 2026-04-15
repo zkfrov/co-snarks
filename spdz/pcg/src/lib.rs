@@ -31,6 +31,8 @@ pub mod sparse;
 pub mod triples;
 
 #[cfg(feature = "ferret")]
+pub mod ferret_dpf_gen;
+#[cfg(feature = "ferret")]
 pub mod ferret_protocol;
 
 pub use pcg::{PcgParams, PcgSeed, Role};
@@ -38,6 +40,8 @@ pub use preprocessing::PcgPreprocessing;
 pub use protocol::{MockOleProtocol, OleProtocol};
 pub use triples::{ole_to_beaver_triples, BeaverTripleShare};
 
+#[cfg(feature = "ferret")]
+pub use ferret_dpf_gen::FerretDpfGenProtocol;
 #[cfg(feature = "ferret")]
 pub use ferret_protocol::FerretOleProtocol;
 
