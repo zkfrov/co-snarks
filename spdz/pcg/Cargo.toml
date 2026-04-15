@@ -23,6 +23,7 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 eyre = { workspace = true }
+sha3 = "0.10"
 
 [dev-dependencies]
 ark-bn254 = { workspace = true }

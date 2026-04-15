@@ -19,6 +19,7 @@
 //!   to know each other's sparse polynomials directly. This is INSECURE but
 //!   validates the expansion math. Real DMPF comes in Phase 1c.
 
+pub mod dpf;
 pub mod pcg;
 pub mod preprocessing;
 pub mod protocol;
