@@ -181,7 +181,13 @@ fn block_to_field<F: PrimeField>(block: Block, tag: u64) -> F {
 /// `Vec<F>` of length `n * field_bits`.
 ///
 /// `net` is the sync network for sending τ (auxiliary msg, not part of mpz).
-fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
+/// Gilboa "sender" side of a batch of pointwise OLEs.
+///
+/// Given `x_values` of length n, produces `s_0` of length n such that
+/// `s_0[i] + s_1[i] = x_values[i] * y_values[i]` where `y_values` is the
+/// other party's input to [`gilboa_recv`]. Internally uses `n * field_bits`
+/// RCOTs from the Ferret session.
+pub fn gilboa_send<F: PrimeField, N: Network + Unpin + 'static>(
     session: &mut FerretSession<N>,
     net: &N,
     x_values: &[F],
@@ -270,7 +276,8 @@ fn gilboa_send_chunk<F: PrimeField, N: Network + Unpin + 'static>(
     Ok(sender_shares)
 }
 
-fn gilboa_recv<F: PrimeField, N: Network + Unpin + 'static>(
+/// Gilboa "receiver" side of a batch of pointwise OLEs. See [`gilboa_send`].
+pub fn gilboa_recv<F: PrimeField, N: Network + Unpin + 'static>(
     session: &mut FerretSession<N>,
     net: &N,
     y_values: &[F],

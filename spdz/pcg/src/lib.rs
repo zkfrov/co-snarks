@@ -25,10 +25,16 @@ pub mod protocol;
 pub mod sparse;
 pub mod triples;
 
+#[cfg(feature = "ferret")]
+pub mod ferret_protocol;
+
 pub use pcg::{PcgParams, PcgSeed, Role};
 pub use preprocessing::PcgPreprocessing;
 pub use protocol::{MockOleProtocol, OleProtocol};
 pub use triples::{ole_to_beaver_triples, BeaverTripleShare};
+
+#[cfg(feature = "ferret")]
+pub use ferret_protocol::FerretOleProtocol;
 
 /// Default parameters for BN254: ~1M OLEs with moderate security.
 /// These should be reviewed against the LPN security estimator before use.
