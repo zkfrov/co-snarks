@@ -106,6 +106,46 @@ fn pcg_preprocessing_drives_multiple_muls() {
     }
 }
 
+/// Phase 2b.2d: PcgPreprocessing backed by the sub-linear Ring-LPN PCG
+/// with trusted-dealer seed generation per batch.
+#[test]
+fn pcg_preprocessing_ring_lpn() {
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
+    let shared_seed: u64 = 0xCAFEBABE;
+    let a_seed: u64 = 0xA11C0DE;
+
+    // log_n=10 → 2^10 = 1024 OLEs per batch → 512 triples
+    // t=16 is small but enough for our tiny integration test.
+    let p0_prep = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(0, shared_seed, 10, 16, a_seed);
+    let p1_prep = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(1, shared_seed, 10, 16, a_seed);
+
+    let a = Fr::rand(&mut rng);
+    let b = Fr::rand(&mut rng);
+    let [a0, a1] = share_field_element(a, Fr::zero(), &mut rng);
+    let [b0, b1] = share_field_element(b, Fr::zero(), &mut rng);
+
+    let networks = LocalNetwork::new(2);
+    let mut nets = networks.into_iter();
+    let net0 = nets.next().unwrap();
+    let net1 = nets.next().unwrap();
+
+    let h0 = std::thread::spawn(move || {
+        let mut state = SpdzState::new_mac_free(0, Box::new(p0_prep));
+        let c = mul(&a0, &b0, &net0, &mut state).unwrap();
+        open(&c, &net0, None).unwrap()
+    });
+    let h1 = std::thread::spawn(move || {
+        let mut state = SpdzState::new_mac_free(1, Box::new(p1_prep));
+        let c = mul(&a1, &b1, &net1, &mut state).unwrap();
+        open(&c, &net1, None).unwrap()
+    });
+
+    let r0 = h0.join().unwrap();
+    let r1 = h1.join().unwrap();
+    assert_eq!(r0, a * b);
+    assert_eq!(r1, a * b);
+}
+
 /// Phase 2a.0: PcgPreprocessing driven by a real 2-party OLE protocol
 /// (MockOleProtocol). Each party has a private seed; the shared seed is only
 /// used for the non-triple trusted-dealer correlations (mac key, etc.).

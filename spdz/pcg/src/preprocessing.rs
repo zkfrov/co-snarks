@@ -7,6 +7,7 @@
 
 use crate::pcg::{PcgParams, PcgSeed, Role};
 use crate::protocol::OleProtocol;
+use crate::ring_lpn_pcg::{RingLpnPcgParams, RingLpnPcgSeed};
 use crate::triples::{ole_to_beaver_triples, BeaverTripleShare};
 use ark_ff::PrimeField;
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
@@ -49,6 +50,14 @@ pub struct PcgPreprocessing<F: PrimeField + ark_ff::FftField> {
     /// This party's private RNG for generating its own `a` polynomial each
     /// batch in protocol mode. Only used when `protocol.is_some()`.
     private_poly_rng: ChaCha20Rng,
+
+    /// Ring-LPN PCG parameters. When present, `refill_triples` uses the
+    /// sub-linear Ring-LPN construction (Phase 2b). Trusted-dealer seeds
+    /// for each batch are derived from `shared_seed + batch_counter`.
+    /// Mutually exclusive with `protocol`.
+    ring_lpn_params: Option<RingLpnPcgParams<F>>,
+    /// Sparsity parameter for Ring-LPN mode.
+    ring_lpn_t: usize,
 }
 
 unsafe impl<F: PrimeField + ark_ff::FftField> Send for PcgPreprocessing<F> {}
@@ -91,6 +100,8 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             shared_seed,
             protocol: None,
             private_poly_rng: ChaCha20Rng::seed_from_u64(shared_seed ^ 0xBEEF),
+            ring_lpn_params: None,
+            ring_lpn_t: 0,
         }
     }
 
@@ -137,11 +148,70 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             shared_seed,
             protocol: Some(protocol),
             private_poly_rng: ChaCha20Rng::seed_from_u64(private_seed),
+            ring_lpn_params: None,
+            ring_lpn_t: 0,
+        }
+    }
+
+    /// Phase 2b.2d constructor: sub-linear Ring-LPN PCG with trusted-dealer
+    /// seed generation for each batch.
+    ///
+    /// Both parties call with the SAME `shared_seed`, `log_n`, `t`, and
+    /// `a_seed`. The Ring-LPN public polynomial `a` is derived from `a_seed`;
+    /// each batch's dealer seed is `shared_seed + batch_counter · 0xA11CE`.
+    ///
+    /// This is INSECURE (shared dealer seed → either party can recompute the
+    /// other's sparse polys). Phase 2b.2e replaces the dealer with real
+    /// 2-party DMPF key gen via OT.
+    pub fn new_ring_lpn_insecure(
+        party_id: usize,
+        shared_seed: u64,
+        log_n: u32,
+        t: usize,
+        a_seed: u64,
+    ) -> Self {
+        assert!(party_id == 0 || party_id == 1);
+        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
+        let params = PcgParams {
+            log_n: log_n as usize,
+        };
+
+        // MAC key shares from shared_seed (same trusted-dealer pattern as before).
+        let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
+        let mac_key = F::rand(&mut seed_rng);
+        let mk0 = F::rand(&mut seed_rng);
+        let mk1 = mac_key - mk0;
+        let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
+
+        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
+
+        let ring_lpn_params = RingLpnPcgParams::<F>::new(log_n, t, a_seed);
+
+        Self {
+            party_id,
+            role,
+            mac_key_share,
+            mac_key,
+            rng,
+            triple_buf: Vec::new(),
+            random_buf: Vec::new(),
+            bit_buf: Vec::new(),
+            input_mask_buf: Vec::new(),
+            counter_mask_buf: Vec::new(),
+            params,
+            batch_counter: 0,
+            shared_seed,
+            protocol: None,
+            private_poly_rng: ChaCha20Rng::seed_from_u64(shared_seed ^ 0xDEAD),
+            ring_lpn_params: Some(ring_lpn_params),
+            ring_lpn_t: t,
         }
     }
 
     fn refill_triples(&mut self) {
-        if self.protocol.is_some() {
+        if self.ring_lpn_params.is_some() {
+            self.refill_triples_ring_lpn();
+        } else if self.protocol.is_some() {
             self.refill_triples_via_protocol();
         } else {
             self.refill_triples_trusted_dealer();
@@ -168,6 +238,25 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             c: my_c,
         };
         let ole = seed.expand();
+        let triples = ole_to_beaver_triples(&ole, self.role);
+        self.triple_buf = triples;
+        self.batch_counter += 1;
+    }
+
+    fn refill_triples_ring_lpn(&mut self) {
+        // Trusted-dealer Ring-LPN seed generation per batch. Both parties
+        // derive the same `batch_seed` deterministically from their shared_seed.
+        let batch_seed = self
+            .shared_seed
+            .wrapping_add(0xBEEF * (self.batch_counter + 1));
+        let params = self
+            .ring_lpn_params
+            .as_ref()
+            .expect("ring_lpn_params must be set")
+            .clone();
+        let (seed0, seed1) = RingLpnPcgSeed::<F>::gen_pair_trusted_dealer(params, batch_seed);
+        let my_seed = if self.party_id == 0 { seed0 } else { seed1 };
+        let ole = my_seed.expand_to_ole();
         let triples = ole_to_beaver_triples(&ole, self.role);
         self.triple_buf = triples;
         self.batch_counter += 1;
