@@ -54,8 +54,11 @@ pub struct DmpfParams {
 
 impl DmpfParams {
     pub fn new(log_n: u32, t: usize) -> Self {
-        // ~1.5·t buckets for larger t, 2t for very small t.
-        let overhead_pct = if t < 30 { 100 } else { 50 };
+        // 2× buckets (100% overhead). The BatchCodeDmpf paper claims 50%
+        // is enough, but our random-permutation-based hash distribution
+        // fails cuckoo placement too often at 1.5×. Revisit with a more
+        // carefully-tuned hash mapping.
+        let overhead_pct = 100usize;
         let num_buckets = ((t * (100 + overhead_pct)) / 100).max(1);
         let n = 1usize << log_n;
         // bucket_size = ceil(N·H / B). Round up to power of 2 so the DPF

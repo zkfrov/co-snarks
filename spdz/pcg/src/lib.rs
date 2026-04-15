@@ -24,6 +24,8 @@ pub mod dpf;
 pub mod pcg;
 pub mod preprocessing;
 pub mod protocol;
+pub mod ring_lpn;
+pub mod ring_lpn_pcg;
 pub mod sparse;
 pub mod triples;
 
