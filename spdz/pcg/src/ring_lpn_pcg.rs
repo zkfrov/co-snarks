@@ -27,6 +27,7 @@
 //! Real 2-party key gen comes in Phase 2b.2e using OT.
 
 use crate::dmpf::{eval_all as dmpf_eval_all, gen_dmpf, DmpfKey};
+use crate::dmpf_gen_protocol::DmpfGenProtocol;
 use crate::pcg::Role;
 use crate::ring_lpn::{cyclic_conv_dense, lpn_expand, sparse_cyclic_mul_dense};
 use crate::sparse::SparsePoly;
@@ -158,6 +159,49 @@ impl<F: PrimeField + FftField> RingLpnPcgSeed<F> {
         (seed_p0, seed_p1)
     }
 
+    /// Phase 2b.2e: generate this party's seed using a 2-party DMPF generation
+    /// protocol. Each party calls this with:
+    /// - its own private sparse polys `my_s`, `my_e`
+    /// - 4 protocol instances (one per cross-term)
+    ///
+    /// Protocol assignments (by cross-term):
+    /// - `proto_ss`: computes s_0 · s_1 — P0 submits s_0, P1 submits s_1
+    /// - `proto_se`: computes s_0 · e_1 — P0 submits s_0, P1 submits e_1
+    /// - `proto_es`: computes s_1 · e_0 — P0 submits e_0, P1 submits s_1
+    /// - `proto_ee`: computes e_0 · e_1 — P0 submits e_0, P1 submits e_1
+    pub fn gen_with_protocols(
+        role: Role,
+        params: RingLpnPcgParams<F>,
+        my_s: SparsePoly<F>,
+        my_e: SparsePoly<F>,
+        proto_ss: &mut dyn DmpfGenProtocol<F>,
+        proto_se: &mut dyn DmpfGenProtocol<F>,
+        proto_es: &mut dyn DmpfGenProtocol<F>,
+        proto_ee: &mut dyn DmpfGenProtocol<F>,
+    ) -> eyre::Result<Self> {
+        // Inputs to each protocol depend on role.
+        let (ss_in, se_in, es_in, ee_in) = match role {
+            Role::P0 => (&my_s, &my_s, &my_e, &my_e),
+            Role::P1 => (&my_s, &my_e, &my_s, &my_e),
+        };
+
+        let dmpf_ss = proto_ss.gen_dmpf_share(ss_in, params.log_n)?;
+        let dmpf_se = proto_se.gen_dmpf_share(se_in, params.log_n)?;
+        let dmpf_es = proto_es.gen_dmpf_share(es_in, params.log_n)?;
+        let dmpf_ee = proto_ee.gen_dmpf_share(ee_in, params.log_n)?;
+
+        Ok(RingLpnPcgSeed {
+            role,
+            params,
+            s: my_s,
+            e: my_e,
+            dmpf_ss,
+            dmpf_se,
+            dmpf_es,
+            dmpf_ee,
+        })
+    }
+
     /// Local expansion: produces this party's (a_i, c_i) pair — the input
     /// to the PCG's OLE output. Caller must FFT both to eval form to get
     /// N pointwise OLE correlations.
@@ -237,6 +281,80 @@ mod tests {
             }
         }
         assert_eq!(failures, 0, "{failures}/256 OLE correlations failed");
+    }
+
+    /// Phase 2b.2e.0: each party runs `gen_with_protocols` using mock 2-party
+    /// DMPF generation protocols. Produces the same OLE correlations as the
+    /// trusted-dealer version, but with a protocol-shaped API.
+    #[test]
+    fn ring_lpn_pcg_via_mock_protocols() {
+        use crate::dmpf_gen_protocol::MockDmpfGenProtocol;
+        use crate::sparse::SparsePoly;
+
+        let log_n = 10u32;
+        let t = 8;
+        let params = RingLpnPcgParams::<Fr>::new(log_n, t, 0xA11C0DE);
+
+        // Each party picks its own sparse polys (independently; neither
+        // knows the other's).
+        let mut rng0 = rand_chacha::ChaCha20Rng::seed_from_u64(100);
+        let mut rng1 = rand_chacha::ChaCha20Rng::seed_from_u64(200);
+        let n = params.n();
+        let s0 = SparsePoly::<Fr>::random(n, t, &mut rng0);
+        let e0 = SparsePoly::<Fr>::random(n, t, &mut rng0);
+        let s1 = SparsePoly::<Fr>::random(n, t, &mut rng1);
+        let e1 = SparsePoly::<Fr>::random(n, t, &mut rng1);
+
+        // One protocol pair per cross-term (4 total).
+        let (mut ss_p0, mut ss_p1) = MockDmpfGenProtocol::<Fr>::new_pair(1);
+        let (mut se_p0, mut se_p1) = MockDmpfGenProtocol::<Fr>::new_pair(2);
+        let (mut es_p0, mut es_p1) = MockDmpfGenProtocol::<Fr>::new_pair(3);
+        let (mut ee_p0, mut ee_p1) = MockDmpfGenProtocol::<Fr>::new_pair(4);
+
+        let params_clone = params.clone();
+        let (s0c, e0c) = (s0.clone(), e0.clone());
+        let (s1c, e1c) = (s1.clone(), e1.clone());
+
+        let h0 = std::thread::spawn(move || {
+            RingLpnPcgSeed::gen_with_protocols(
+                Role::P0,
+                params_clone,
+                s0c,
+                e0c,
+                &mut ss_p0,
+                &mut se_p0,
+                &mut es_p0,
+                &mut ee_p0,
+            )
+            .unwrap()
+        });
+        let params_clone2 = params.clone();
+        let h1 = std::thread::spawn(move || {
+            RingLpnPcgSeed::gen_with_protocols(
+                Role::P1,
+                params_clone2,
+                s1c,
+                e1c,
+                &mut ss_p1,
+                &mut se_p1,
+                &mut es_p1,
+                &mut ee_p1,
+            )
+            .unwrap()
+        });
+
+        let seed0 = h0.join().unwrap();
+        let seed1 = h1.join().unwrap();
+
+        let ole0 = seed0.expand_to_ole();
+        let ole1 = seed1.expand_to_ole();
+        assert_eq!(ole0.len(), n);
+
+        for i in 0..n {
+            let (x0, y0) = ole0[i];
+            let (x1, y1) = ole1[i];
+            assert_eq!(x0 * x1, y0 + y1, "OLE at position {i} failed");
+        }
     }
 
     #[test]

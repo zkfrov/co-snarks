@@ -20,6 +20,7 @@
 //!   validates the expansion math. Real DMPF comes in Phase 1c.
 
 pub mod dmpf;
+pub mod dmpf_gen_protocol;
 pub mod dpf;
 pub mod pcg;
 pub mod preprocessing;
