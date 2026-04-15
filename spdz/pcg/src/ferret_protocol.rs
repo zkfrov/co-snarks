@@ -9,8 +9,8 @@
 //! conversion (BIT_SIZE RCOTs per field element). Communication is the
 //! standard Gilboa cost — BIT_SIZE × 32 bytes of τ per OLE.
 
-use crate::pcg::Role;
-use crate::protocol::OleProtocol;
+use pcg_core::pcg::Role;
+use pcg_protocols::OleProtocol;
 use ark_ff::{FftField, PrimeField};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use eyre::Result;

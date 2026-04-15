@@ -5,10 +5,10 @@
 //! (not on the critical path for demonstrating PCG; easy to replace later
 //! with dedicated correlation generators).
 
-use crate::pcg::{PcgParams, PcgSeed, Role};
-use crate::protocol::OleProtocol;
-use crate::ring_lpn_pcg::{RingLpnPcgParams, RingLpnPcgSeed};
-use crate::triples::{ole_to_beaver_triples, BeaverTripleShare};
+use pcg_core::pcg::{PcgParams, PcgSeed, Role};
+use pcg_protocols::OleProtocol;
+use pcg_core::ring_lpn_pcg::{RingLpnPcgParams, RingLpnPcgSeed};
+use pcg_core::triples::{ole_to_beaver_triples, BeaverTripleShare};
 use ark_ff::PrimeField;
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use rand::{Rng, SeedableRng};

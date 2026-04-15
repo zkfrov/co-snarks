@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "SPDZ preprocessing backed by the pcg-bn254 crates"
 
 [features]
 default = []
@@ -12,24 +13,21 @@ default = []
 ferret = ["spdz-core/ferret"]
 
 [dependencies]
+# Our own SPDZ glue.
 spdz-core = { path = "../core" }
 mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
+# Standalone PCG crates (zkfrov/pcg-bn254 repo).
+pcg-core = { path = "../../../pcg-bn254/core" }
+pcg-protocols = { path = "../../../pcg-bn254/protocols" }
+# Standard.
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
 ark-poly = { workspace = true }
 ark-std = { workspace = true }
-ark-serialize = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-rayon = { workspace = true }
 eyre = { workspace = true }
-sha3 = "0.10"
 
 [dev-dependencies]
 ark-bn254 = { workspace = true }
-criterion = "0.5"
 mpc-net = { version = "0.5.0", path = "../../mpc-net", features = ["local"] }
-
-[[bench]]
-name = "ole_throughput"
-harness = false
