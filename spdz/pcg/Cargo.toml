@@ -21,6 +21,7 @@ eyre = { workspace = true }
 [dev-dependencies]
 ark-bn254 = { workspace = true }
 criterion = "0.5"
+mpc-net = { version = "0.5.0", path = "../../mpc-net", features = ["local"] }
 
 [[bench]]
 name = "ole_throughput"
