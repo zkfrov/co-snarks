@@ -109,14 +109,20 @@ impl<T: Default> AllEntities<T, T> {
     }
 }
 
-pub const PROVER_WITNESS_ENTITIES_SIZE: usize = 6;
+// Ultra: 6 prover witness + 2 computed = 8 witness total, 28 precomputed
+// Mega adds: 4 ecc_op_wires + 12 databus (3 columns × 4) = 16 extra witness, 3 extra precomputed
+pub const ULTRA_PROVER_WITNESS_ENTITIES_SIZE: usize = 6;
+pub const MEGA_EXTRA_PROVER_WITNESS: usize = 16; // 4 ecc_op + 12 databus
+pub const PROVER_WITNESS_ENTITIES_SIZE: usize = ULTRA_PROVER_WITNESS_ENTITIES_SIZE + MEGA_EXTRA_PROVER_WITNESS;
 pub const WITNESS_ENTITIES_SIZE: usize = PROVER_WITNESS_ENTITIES_SIZE + 2;
 #[derive(Default, Serialize, Deserialize)]
 pub struct ProverWitnessEntities<T: Default> {
     pub elements: [T; PROVER_WITNESS_ENTITIES_SIZE],
 }
 
-pub const PRECOMPUTED_ENTITIES_SIZE: usize = 28;
+pub const ULTRA_PRECOMPUTED_ENTITIES_SIZE: usize = 28;
+pub const MEGA_EXTRA_PRECOMPUTED: usize = 3; // q_busread, lagrange_ecc_op, databus_id
+pub const PRECOMPUTED_ENTITIES_SIZE: usize = ULTRA_PRECOMPUTED_ENTITIES_SIZE + MEGA_EXTRA_PRECOMPUTED;
 #[derive(Default, Clone, Serialize, Deserialize, Debug)]
 pub struct PrecomputedEntities<T: Default> {
     pub elements: [T; PRECOMPUTED_ENTITIES_SIZE],
@@ -173,9 +179,23 @@ impl<T: Default> ProverWitnessEntities<T> {
     const LOOKUP_READ_COUNTS: usize = 4;
     /// column 7
     const LOOKUP_READ_TAGS: usize = 5;
-
-    // const Z_PERM: usize = 4; // column 4 (computed by prover)
-    // const LOOKUP_INVERSES: usize = 5; // column 5 (computed by prover);
+    // ── Mega-only prover witness entities ──
+    const ECC_OP_WIRE_1: usize = 6;
+    const ECC_OP_WIRE_2: usize = 7;
+    const ECC_OP_WIRE_3: usize = 8;
+    const ECC_OP_WIRE_4: usize = 9;
+    const CALLDATA: usize = 10;
+    const CALLDATA_READ_COUNTS: usize = 11;
+    const CALLDATA_READ_TAGS: usize = 12;
+    const CALLDATA_INVERSES: usize = 13;
+    const SECONDARY_CALLDATA: usize = 14;
+    const SECONDARY_CALLDATA_READ_COUNTS: usize = 15;
+    const SECONDARY_CALLDATA_READ_TAGS: usize = 16;
+    const SECONDARY_CALLDATA_INVERSES: usize = 17;
+    const RETURN_DATA: usize = 18;
+    const RETURN_DATA_READ_COUNTS: usize = 19;
+    const RETURN_DATA_READ_TAGS: usize = 20;
+    const RETURN_DATA_INVERSES: usize = 21;
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elements.iter()
@@ -309,6 +329,13 @@ impl<T: Default> PrecomputedEntities<T> {
     const LAGRANGE_FIRST: usize = 26;
     /// column 27
     const LAGRANGE_LAST: usize = 27;
+    // ── Mega-only precomputed entities ──
+    /// column 28 (Mega only): selector for databus read gates
+    pub const Q_BUSREAD: usize = 28;
+    /// column 29 (Mega only): indicator polynomial for ECC op gates
+    pub const LAGRANGE_ECC_OP: usize = 29;
+    /// column 30 (Mega only): identity polynomial for databus lookups
+    pub const DATABUS_ID: usize = 30;
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elements.iter()
@@ -561,6 +588,32 @@ impl<T: Default> PrecomputedEntities<T> {
     pub fn id_4_mut(&mut self) -> &mut T {
         &mut self.elements[Self::ID_4]
     }
+
+    // ── Mega-only accessors ──
+
+    pub fn q_busread(&self) -> &T {
+        &self.elements[Self::Q_BUSREAD]
+    }
+
+    pub fn q_busread_mut(&mut self) -> &mut T {
+        &mut self.elements[Self::Q_BUSREAD]
+    }
+
+    pub fn lagrange_ecc_op(&self) -> &T {
+        &self.elements[Self::LAGRANGE_ECC_OP]
+    }
+
+    pub fn lagrange_ecc_op_mut(&mut self) -> &mut T {
+        &mut self.elements[Self::LAGRANGE_ECC_OP]
+    }
+
+    pub fn databus_id(&self) -> &T {
+        &self.elements[Self::DATABUS_ID]
+    }
+
+    pub fn databus_id_mut(&mut self) -> &mut T {
+        &mut self.elements[Self::DATABUS_ID]
+    }
 }
 
 #[derive(Default, Clone, Debug)]
@@ -649,6 +702,30 @@ impl<T: Default> WitnessEntities<T> {
     pub(crate) const LOOKUP_READ_COUNTS: usize = 6;
     /// column 7
     pub(crate) const LOOKUP_READ_TAGS: usize = 7;
+    // ── Mega-only witness entities ──
+    /// column 8 (Mega): ECC op wire 1
+    pub const ECC_OP_WIRE_1: usize = 8;
+    /// column 9 (Mega): ECC op wire 2
+    pub const ECC_OP_WIRE_2: usize = 9;
+    /// column 10 (Mega): ECC op wire 3
+    pub const ECC_OP_WIRE_3: usize = 10;
+    /// column 11 (Mega): ECC op wire 4
+    pub const ECC_OP_WIRE_4: usize = 11;
+    /// columns 12-15 (Mega): calldata bus
+    pub const CALLDATA: usize = 12;
+    pub const CALLDATA_READ_COUNTS: usize = 13;
+    pub const CALLDATA_READ_TAGS: usize = 14;
+    pub const CALLDATA_INVERSES: usize = 15;
+    /// columns 16-19 (Mega): secondary calldata bus
+    pub const SECONDARY_CALLDATA: usize = 16;
+    pub const SECONDARY_CALLDATA_READ_COUNTS: usize = 17;
+    pub const SECONDARY_CALLDATA_READ_TAGS: usize = 18;
+    pub const SECONDARY_CALLDATA_INVERSES: usize = 19;
+    /// columns 20-23 (Mega): return data bus
+    pub const RETURN_DATA: usize = 20;
+    pub const RETURN_DATA_READ_COUNTS: usize = 21;
+    pub const RETURN_DATA_READ_TAGS: usize = 22;
+    pub const RETURN_DATA_INVERSES: usize = 23;
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elements.iter()
@@ -697,6 +774,25 @@ impl<T: Default> WitnessEntities<T> {
     pub fn lookup_read_tags(&self) -> &T {
         &self.elements[Self::LOOKUP_READ_TAGS]
     }
+
+    // ── Mega-only witness accessors ──
+
+    pub fn ecc_op_wire_1(&self) -> &T { &self.elements[Self::ECC_OP_WIRE_1] }
+    pub fn ecc_op_wire_2(&self) -> &T { &self.elements[Self::ECC_OP_WIRE_2] }
+    pub fn ecc_op_wire_3(&self) -> &T { &self.elements[Self::ECC_OP_WIRE_3] }
+    pub fn ecc_op_wire_4(&self) -> &T { &self.elements[Self::ECC_OP_WIRE_4] }
+    pub fn calldata(&self) -> &T { &self.elements[Self::CALLDATA] }
+    pub fn calldata_read_counts(&self) -> &T { &self.elements[Self::CALLDATA_READ_COUNTS] }
+    pub fn calldata_read_tags(&self) -> &T { &self.elements[Self::CALLDATA_READ_TAGS] }
+    pub fn calldata_inverses(&self) -> &T { &self.elements[Self::CALLDATA_INVERSES] }
+    pub fn secondary_calldata(&self) -> &T { &self.elements[Self::SECONDARY_CALLDATA] }
+    pub fn secondary_calldata_read_counts(&self) -> &T { &self.elements[Self::SECONDARY_CALLDATA_READ_COUNTS] }
+    pub fn secondary_calldata_read_tags(&self) -> &T { &self.elements[Self::SECONDARY_CALLDATA_READ_TAGS] }
+    pub fn secondary_calldata_inverses(&self) -> &T { &self.elements[Self::SECONDARY_CALLDATA_INVERSES] }
+    pub fn return_data(&self) -> &T { &self.elements[Self::RETURN_DATA] }
+    pub fn return_data_read_counts(&self) -> &T { &self.elements[Self::RETURN_DATA_READ_COUNTS] }
+    pub fn return_data_read_tags(&self) -> &T { &self.elements[Self::RETURN_DATA_READ_TAGS] }
+    pub fn return_data_inverses(&self) -> &T { &self.elements[Self::RETURN_DATA_INVERSES] }
 
     pub fn w_l_mut(&mut self) -> &mut T {
         &mut self.elements[Self::W_L]
