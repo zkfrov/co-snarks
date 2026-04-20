@@ -9,25 +9,60 @@ description = "SPDZ preprocessing backed by the pcg-bn254 crates"
 
 [features]
 default = []
-## Enable Ferret-based OleProtocol implementation (pulls in mpz dependencies).
-ferret = ["spdz-core/ferret"]
+## Enable Ferret-based OleProtocol / BitOt implementation (pulls in mpz dependencies).
+ferret = ["spdz-core/ferret", "dep:mpz-core", "dep:sha3"]
+## Enable 2PC garbled-circuit evaluator (via mpz-garble). Used for Phase B.2
+## oblivious DPF gen. Pulls in the full mpz GC stack.
+gc = [
+    "ferret",
+    "dep:mpz-circuits",
+    "dep:mpz-common",
+    "dep:mpz-garble",
+    "dep:mpz-memory-core",
+    "dep:mpz-ot",
+    "dep:mpz-ot-core",
+    "dep:mpz-vm-core",
+    "dep:futures",
+    "dep:tokio",
+    "dep:once_cell",
+]
 
 [dependencies]
 # Our own SPDZ glue.
 spdz-core = { path = "../core" }
 mpc-net = { version = "0.5.0", path = "../../mpc-net", default-features = false }
 # Standalone PCG crates (zkfrov/pcg-bn254 repo).
-pcg-core = { path = "../../../pcg-bn254/core" }
-pcg-protocols = { path = "../../../pcg-bn254/protocols" }
+pcg-core = { path = "../../../pcg/core", features = ["testing"] }
+pcg-protocols = { path = "../../../pcg/protocols" }
 # Standard.
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
 ark-poly = { workspace = true }
+ark-serialize = { workspace = true }
 ark-std = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 eyre = { workspace = true }
 
+# Ferret-feature only.
+mpz-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+sha3 = { workspace = true, optional = true }
+
+# GC-feature only (2PC garbled circuits via mpz).
+mpz-circuits = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true, features = ["aes"] }
+mpz-common = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-garble = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-memory-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-ot = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true, features = ["ideal"] }
+mpz-ot-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+mpz-vm-core = { git = "https://github.com/privacy-scaling-explorations/mpz", optional = true }
+futures = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["rt", "sync", "io-util", "macros"], optional = true }
+once_cell = { version = "1", optional = true }
+
 [dev-dependencies]
 ark-bn254 = { workspace = true }
+ark-serialize = { workspace = true }
 mpc-net = { version = "0.5.0", path = "../../mpc-net", features = ["local"] }
+# Used by the GC POC test to compute a plaintext AES reference.
+aes = "0.8"

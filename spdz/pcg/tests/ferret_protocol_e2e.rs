@@ -1,7 +1,7 @@
 //! End-to-end test: PcgPreprocessing driven by a real Ferret OT protocol
 //! over a local network (not a mock).
 //!
-//! This is the Phase 2a.1 milestone — no trusted dealer, real crypto for
+//! This is the OLE-based PCG.1 milestone — no trusted dealer, real crypto for
 //! the OLE-per-triple phase.
 
 #![cfg(feature = "ferret")]

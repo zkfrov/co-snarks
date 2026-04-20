@@ -1,168 +1,73 @@
 //! SpdzPreprocessing adapter backed by the PCG.
 //!
-//! Triples come from the PCG's OLE expansion. Shared randoms, bits, and input
-//! masks use the same trusted-dealer construction as `DummyPreprocessing`
-//! (not on the critical path for demonstrating PCG; easy to replace later
-//! with dedicated correlation generators).
+//! Triples come from the PCG's OLE expansion (Ring-LPN or oblivious DPF).
+//! Shared randoms, bits, and input masks use a trusted-dealer construction
+//! (not on the critical path; easy to replace later with dedicated generators).
 
-use pcg_core::pcg::{PcgParams, PcgSeed, Role};
-use pcg_protocols::OleProtocol;
-use pcg_core::ring_lpn_pcg::{RingLpnPcgParams, RingLpnPcgSeed};
+use pcg_core::pcg::Role;
+use pcg_core::ring_lpn_pcg::RingLpnPcgParams;
 use pcg_core::triples::{ole_to_beaver_triples, BeaverTripleShare};
 use ark_ff::PrimeField;
-use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use spdz_core::preprocessing::SpdzPreprocessing;
 use spdz_core::SpdzPrimeFieldShare;
 
-/// Triples per expansion batch. Each expansion produces N=2^log_n OLEs →
-/// N/2 triples.
-const DEFAULT_LOG_N: usize = 16; // 2^16 = 65536 OLEs per batch → 32768 triples
+#[cfg(feature = "gc")]
+use crate::dmpf_oblivious::Seed2PartyOblivious;
 
 pub struct PcgPreprocessing<F: PrimeField + ark_ff::FftField> {
     party_id: usize,
     role: Role,
     mac_key_share: F,
-    /// Only populated in `new_insecure` mode; in protocol mode we just hold the
-    /// share. Used by `test_pcg_preprocessing_mac_key` to sanity-check.
+    /// Only populated in insecure modes; used by tests to sanity-check.
     pub(crate) mac_key: F,
     rng: ChaCha20Rng,
 
-    // Current batch of triples pulled from the most-recent expansion
+    // Current batch of triples from the most-recent expansion.
     triple_buf: Vec<BeaverTripleShare<F>>,
 
-    // Non-triple material (trusted-dealer style for MVP)
+    // Non-triple material (trusted-dealer style for MVP).
     random_buf: Vec<SpdzPrimeFieldShare<F>>,
     bit_buf: Vec<SpdzPrimeFieldShare<F>>,
     input_mask_buf: Vec<(F, SpdzPrimeFieldShare<F>)>,
     counter_mask_buf: Vec<SpdzPrimeFieldShare<F>>,
 
-    params: PcgParams,
+    log_n: usize,
     batch_counter: u64,
     shared_seed: u64,
 
-    /// Real 2-party protocol for computing c shares. If present, `refill_triples`
-    /// uses it (Phase 2a+ mode). If None, uses the legacy trusted-dealer seed
-    /// derivation from `shared_seed` (insecure MVP mode).
-    protocol: Option<Box<dyn OleProtocol<F>>>,
-
-    /// This party's private RNG for generating its own `a` polynomial each
-    /// batch in protocol mode. Only used when `protocol.is_some()`.
-    private_poly_rng: ChaCha20Rng,
-
     /// Ring-LPN PCG parameters. When present, `refill_triples` uses the
-    /// sub-linear Ring-LPN construction (Phase 2b). Trusted-dealer seeds
-    /// for each batch are derived from `shared_seed + batch_counter`.
-    /// Mutually exclusive with `protocol`.
+    /// sub-linear Ring-LPN construction with trusted-dealer seeds.
     ring_lpn_params: Option<RingLpnPcgParams<F>>,
-    /// Sparsity parameter for Ring-LPN mode.
     ring_lpn_t: usize,
+
+    /// Oblivious PCG seeds: pre-generated via `gen_seed_2party_oblivious`.
+    /// `refill_triples` pops one seed per call and expands to triples.
+    #[cfg(feature = "gc")]
+    oblivious_seeds: Vec<Seed2PartyOblivious<F>>,
 }
 
 unsafe impl<F: PrimeField + ark_ff::FftField> Send for PcgPreprocessing<F> {}
 
 impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
-    /// Create a PCG-backed preprocessing source for MVP testing.
-    ///
-    /// Both parties should call this with the SAME `shared_seed` but different
-    /// `party_id`. The seed drives both the trusted-dealer dummy correlations
-    /// (randoms/bits/masks) and the PCG seed pair generation.
-    pub fn new_insecure(party_id: usize, shared_seed: u64, log_n: usize) -> Self {
-        assert!(party_id == 0 || party_id == 1);
-        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
-        let params = PcgParams { log_n };
-
-        // Derive a MAC key from the shared seed (same on both parties).
-        let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
-        let mac_key = F::rand(&mut seed_rng);
-        // Split MAC key additively.
-        let mk0 = F::rand(&mut seed_rng);
-        let mk1 = mac_key - mk0;
-        let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
-
-        // Per-party RNG: includes the party id so each party's private ops differ.
-        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
-
-        Self {
-            party_id,
-            role,
-            mac_key_share,
-            mac_key,
-            rng,
-            triple_buf: Vec::new(),
-            random_buf: Vec::new(),
-            bit_buf: Vec::new(),
-            input_mask_buf: Vec::new(),
-            counter_mask_buf: Vec::new(),
-            params,
-            batch_counter: 0,
-            shared_seed,
-            protocol: None,
-            private_poly_rng: ChaCha20Rng::seed_from_u64(shared_seed ^ 0xBEEF),
-            ring_lpn_params: None,
-            ring_lpn_t: 0,
-        }
-    }
-
-    /// Phase 2a constructor: uses a real 2-party OLE protocol for triple
-    /// generation. Each party calls this with its own `private_seed` (unknown
-    /// to the peer) plus a `protocol` that coordinates with the peer.
-    ///
-    /// `shared_seed` is only used for the non-triple correlations (shared
-    /// randoms, bits, input masks), which still use the trusted-dealer MVP
-    /// in this phase.
-    pub fn new_with_protocol(
-        party_id: usize,
-        private_seed: u64,
-        shared_seed: u64,
-        log_n: usize,
-        protocol: Box<dyn OleProtocol<F>>,
-    ) -> Self {
-        assert!(party_id == 0 || party_id == 1);
-        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
-        let params = PcgParams { log_n };
-
-        // MAC key shares still come from shared_seed (non-triple path).
+    /// Helper: derive MAC key shares from a shared seed.
+    fn derive_mac_keys(shared_seed: u64, party_id: usize) -> (F, F, F) {
         let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
         let mac_key = F::rand(&mut seed_rng);
         let mk0 = F::rand(&mut seed_rng);
         let mk1 = mac_key - mk0;
         let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
-
-        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
-
-        Self {
-            party_id,
-            role,
-            mac_key_share,
-            mac_key,
-            rng,
-            triple_buf: Vec::new(),
-            random_buf: Vec::new(),
-            bit_buf: Vec::new(),
-            input_mask_buf: Vec::new(),
-            counter_mask_buf: Vec::new(),
-            params,
-            batch_counter: 0,
-            shared_seed,
-            protocol: Some(protocol),
-            private_poly_rng: ChaCha20Rng::seed_from_u64(private_seed),
-            ring_lpn_params: None,
-            ring_lpn_t: 0,
-        }
+        (mac_key, mac_key_share, mac_key)
     }
 
-    /// Phase 2b.2d constructor: sub-linear Ring-LPN PCG with trusted-dealer
-    /// seed generation for each batch.
+    /// Ring-LPN PCG constructor with trusted-dealer seed generation.
     ///
     /// Both parties call with the SAME `shared_seed`, `log_n`, `t`, and
-    /// `a_seed`. The Ring-LPN public polynomial `a` is derived from `a_seed`;
-    /// each batch's dealer seed is `shared_seed + batch_counter · 0xA11CE`.
+    /// `a_seed`. Each batch's dealer seed is derived deterministically.
     ///
-    /// This is INSECURE (shared dealer seed → either party can recompute the
-    /// other's sparse polys). Phase 2b.2e replaces the dealer with real
-    /// 2-party DMPF key gen via OT.
+    /// **INSECURE** (shared dealer seed). Use the oblivious constructor
+    /// for production.
     pub fn new_ring_lpn_insecure(
         party_id: usize,
         shared_seed: u64,
@@ -172,19 +77,8 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
     ) -> Self {
         assert!(party_id == 0 || party_id == 1);
         let role = if party_id == 0 { Role::P0 } else { Role::P1 };
-        let params = PcgParams {
-            log_n: log_n as usize,
-        };
-
-        // MAC key shares from shared_seed (same trusted-dealer pattern as before).
-        let mut seed_rng = ChaCha20Rng::seed_from_u64(shared_seed);
-        let mac_key = F::rand(&mut seed_rng);
-        let mk0 = F::rand(&mut seed_rng);
-        let mk1 = mac_key - mk0;
-        let mac_key_share = if party_id == 0 { mk0 } else { mk1 };
-
+        let (mac_key, mac_key_share, _) = Self::derive_mac_keys(shared_seed, party_id);
         let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
-
         let ring_lpn_params = RingLpnPcgParams::<F>::new(log_n, t, a_seed);
 
         Self {
@@ -198,54 +92,171 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
             bit_buf: Vec::new(),
             input_mask_buf: Vec::new(),
             counter_mask_buf: Vec::new(),
-            params,
+            log_n: log_n as usize,
             batch_counter: 0,
             shared_seed,
-            protocol: None,
-            private_poly_rng: ChaCha20Rng::seed_from_u64(shared_seed ^ 0xDEAD),
             ring_lpn_params: Some(ring_lpn_params),
             ring_lpn_t: t,
+            #[cfg(feature = "gc")]
+            oblivious_seeds: Vec::new(),
         }
+    }
+
+    /// Convenience alias for backward compatibility.
+    pub fn new_insecure(party_id: usize, shared_seed: u64, log_n: usize) -> Self {
+        // Use Ring-LPN with small t for insecure/testing mode.
+        Self::new_ring_lpn_insecure(party_id, shared_seed, log_n as u32, 4, 0xA11CE)
+    }
+
+    /// Oblivious constructor: builds SPDZ preprocessing on top of
+    /// `gen_seed_2party_oblivious`. The resulting triples come from a PCG
+    /// batch generated **without leaking sparse-poly positions** to either party.
+    #[cfg(feature = "gc")]
+    pub fn new_ring_lpn_oblivious<N, OT>(
+        party_id: usize,
+        shared_seed: u64,
+        private_seed: u64,
+        log_n: u32,
+        t: usize,
+        a_seed: u64,
+        prg_session: &mut crate::Prg2pcSession<N>,
+        bit_ot: &mut OT,
+    ) -> eyre::Result<Self>
+    where
+        F: ark_ff::FftField,
+        N: mpc_net::Network + Unpin + 'static,
+        OT: pcg_protocols::BitOt,
+    {
+        use pcg_core::sparse::SparsePoly;
+
+        eyre::ensure!(party_id == 0 || party_id == 1, "party_id must be 0 or 1");
+        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
+        let (mac_key, mac_key_share, _) = Self::derive_mac_keys(shared_seed, party_id);
+        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
+
+        let mut sparse_rng = ChaCha20Rng::seed_from_u64(private_seed);
+        let n = 1usize << log_n;
+        let s = SparsePoly::<F>::random(n, t, &mut sparse_rng);
+        let e = SparsePoly::<F>::random(n, t, &mut sparse_rng);
+
+        let pcg_params = RingLpnPcgParams::<F>::new(log_n, t, a_seed);
+        let oblivious_seed = crate::dmpf_oblivious::gen_seed_2party_oblivious::<F, N, OT>(
+            prg_session, bit_ot, role, pcg_params, s, e,
+        )?;
+
+        Ok(Self {
+            party_id,
+            role,
+            mac_key_share,
+            mac_key,
+            rng,
+            triple_buf: Vec::new(),
+            random_buf: Vec::new(),
+            bit_buf: Vec::new(),
+            input_mask_buf: Vec::new(),
+            counter_mask_buf: Vec::new(),
+            log_n: log_n as usize,
+            batch_counter: 0,
+            shared_seed,
+            ring_lpn_params: None,
+            ring_lpn_t: 0,
+            #[cfg(feature = "gc")]
+            oblivious_seeds: vec![oblivious_seed],
+        })
+    }
+
+    /// Multi-batch oblivious constructor: pre-generates `n_batches`
+    /// independent PCG batches. All batches reuse the same `Prg2pcSession`
+    /// so Ferret bootstrap amortizes.
+    #[cfg(feature = "gc")]
+    pub fn new_ring_lpn_oblivious_batched<N, OT>(
+        party_id: usize,
+        shared_seed: u64,
+        private_seed: u64,
+        log_n: u32,
+        t: usize,
+        a_seed: u64,
+        n_batches: usize,
+        prg_session: &mut crate::Prg2pcSession<N>,
+        bit_ot: &mut OT,
+    ) -> eyre::Result<Self>
+    where
+        F: ark_ff::FftField,
+        N: mpc_net::Network + Unpin + 'static,
+        OT: pcg_protocols::BitOt,
+    {
+        use pcg_core::sparse::SparsePoly;
+
+        eyre::ensure!(party_id == 0 || party_id == 1, "party_id must be 0 or 1");
+        eyre::ensure!(n_batches >= 1, "n_batches must be >= 1");
+        let role = if party_id == 0 { Role::P0 } else { Role::P1 };
+        let (mac_key, mac_key_share, _) = Self::derive_mac_keys(shared_seed, party_id);
+        let rng = ChaCha20Rng::seed_from_u64(shared_seed.wrapping_add(party_id as u64));
+
+        let mut sparse_rng = ChaCha20Rng::seed_from_u64(private_seed);
+        let n = 1usize << log_n;
+        let pcg_params = RingLpnPcgParams::<F>::new(log_n, t, a_seed);
+
+        let mut oblivious_seeds = Vec::with_capacity(n_batches);
+        for _ in 0..n_batches {
+            let s = SparsePoly::<F>::random(n, t, &mut sparse_rng);
+            let e = SparsePoly::<F>::random(n, t, &mut sparse_rng);
+            let seed = crate::dmpf_oblivious::gen_seed_2party_oblivious::<F, N, OT>(
+                prg_session, bit_ot, role, pcg_params.clone(), s, e,
+            )?;
+            oblivious_seeds.push(seed);
+        }
+
+        Ok(Self {
+            party_id,
+            role,
+            mac_key_share,
+            mac_key,
+            rng,
+            triple_buf: Vec::new(),
+            random_buf: Vec::new(),
+            bit_buf: Vec::new(),
+            input_mask_buf: Vec::new(),
+            counter_mask_buf: Vec::new(),
+            log_n: log_n as usize,
+            batch_counter: 0,
+            shared_seed,
+            ring_lpn_params: None,
+            ring_lpn_t: 0,
+            oblivious_seeds,
+        })
     }
 
     fn refill_triples(&mut self) {
+        #[cfg(feature = "gc")]
+        if !self.oblivious_seeds.is_empty() {
+            self.refill_triples_oblivious();
+            return;
+        }
         if self.ring_lpn_params.is_some() {
             self.refill_triples_ring_lpn();
-        } else if self.protocol.is_some() {
-            self.refill_triples_via_protocol();
         } else {
-            self.refill_triples_trusted_dealer();
+            panic!("no triple source configured");
         }
     }
 
-    fn refill_triples_via_protocol(&mut self) {
-        let n = self.params.n();
-        // Generate my own private `a` polynomial from the private RNG.
-        let my_a: Vec<F> = (0..n).map(|_| F::rand(&mut self.private_poly_rng)).collect();
-
-        // Call the protocol to get my share of c = a_0 * a_1 (cyclic).
-        let log_n = self.params.log_n;
-        let protocol = self.protocol.as_mut().expect("protocol must be set");
-        let my_c = protocol
-            .cyclic_conv_share(&my_a, log_n)
-            .expect("OLE protocol failed");
-
-        // Assemble a PcgSeed with my own (a, c) and expand to OLE correlations.
-        let seed = PcgSeed::<F> {
-            role: self.role,
-            params: self.params.clone(),
-            a: my_a,
-            c: my_c,
-        };
-        let ole = seed.expand();
+    #[cfg(feature = "gc")]
+    fn refill_triples_oblivious(&mut self) {
+        assert!(
+            !self.oblivious_seeds.is_empty(),
+            "all pre-generated oblivious PCG batches consumed"
+        );
+        let seed = self.oblivious_seeds.remove(0);
+        let ole = seed.expand_to_ole();
         let triples = ole_to_beaver_triples(&ole, self.role);
         self.triple_buf = triples;
         self.batch_counter += 1;
     }
 
     fn refill_triples_ring_lpn(&mut self) {
-        // Trusted-dealer Ring-LPN seed generation per batch. Both parties
-        // derive the same `batch_seed` deterministically from their shared_seed.
+        // pcg-core's "testing" feature is enabled in our Cargo.toml dependency,
+        // so RingLpnPcgSeed::gen_pair_trusted_dealer is always available here.
+        use pcg_core::ring_lpn_pcg::RingLpnPcgSeed;
         let batch_seed = self
             .shared_seed
             .wrapping_add(0xBEEF * (self.batch_counter + 1));
@@ -262,22 +273,7 @@ impl<F: PrimeField + ark_ff::FftField> PcgPreprocessing<F> {
         self.batch_counter += 1;
     }
 
-    fn refill_triples_trusted_dealer(&mut self) {
-        // Generate a fresh PCG seed pair deterministically (both parties derive
-        // the same batch seed from shared_seed + batch_counter).
-        let batch_seed = self
-            .shared_seed
-            .wrapping_add(0xA11CE * (self.batch_counter + 1));
-        let (p0, p1) = PcgSeed::<F>::gen_pair_insecure(self.params.clone(), batch_seed);
-        let my_seed = if self.party_id == 0 { p0 } else { p1 };
-        let ole = my_seed.expand();
-        let triples = ole_to_beaver_triples(&ole, self.role);
-        self.triple_buf = triples;
-        self.batch_counter += 1;
-    }
-
     fn make_share(&mut self, val: F) -> SpdzPrimeFieldShare<F> {
-        // Trusted-dealer split: derive both shares from shared rng and take ours.
         let s0 = F::rand(&mut self.rng);
         let s1 = val - s0;
         let mac = self.mac_key * val;
@@ -341,7 +337,6 @@ impl<F: PrimeField + ark_ff::FftField> SpdzPreprocessing<F> for PcgPreprocessing
             self.refill_triples();
         }
         let t = self.triple_buf.pop().unwrap();
-        // In mac-free mode, mac field is ignored. Fill with zero.
         let zero = F::zero();
         Ok((
             SpdzPrimeFieldShare::new(t.a, zero),
@@ -387,10 +382,9 @@ mod tests {
 
     #[test]
     fn test_pcg_preprocessing_triples() {
-        let mut p0 = PcgPreprocessing::<Fr>::new_insecure(0, 42, 10);
-        let mut p1 = PcgPreprocessing::<Fr>::new_insecure(1, 42, 10);
+        let mut p0 = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(0, 42, 10, 4, 0xA11CE);
+        let mut p1 = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(1, 42, 10, 4, 0xA11CE);
 
-        // Get 100 triples from each party
         for i in 0..100 {
             let (a0, b0, c0) = p0.next_triple().unwrap();
             let (a1, b1, c1) = p1.next_triple().unwrap();
@@ -404,9 +398,8 @@ mod tests {
 
     #[test]
     fn test_pcg_preprocessing_mac_key() {
-        let p0 = PcgPreprocessing::<Fr>::new_insecure(0, 42, 10);
-        let p1 = PcgPreprocessing::<Fr>::new_insecure(1, 42, 10);
-        // MAC key shares should sum to the shared MAC key
+        let p0 = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(0, 42, 10, 4, 0xA11CE);
+        let p1 = PcgPreprocessing::<Fr>::new_ring_lpn_insecure(1, 42, 10, 4, 0xA11CE);
         assert_eq!(p0.mac_key_share() + p1.mac_key_share(), p0.mac_key);
         assert_eq!(p0.mac_key, p1.mac_key);
     }

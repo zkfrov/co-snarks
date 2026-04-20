@@ -109,13 +109,13 @@ dependencies = [
 
 [[package]]
 name = "aes"
-version = "0.9.0"
+version = "0.9.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66bd29a732b644c0431c6140f370d097879203d79b80c94a6747ba0872adaef8"
+checksum = "04097e08a47d9ad181c2e1f4a5fabc9ae06ce8839a333ba9a949bcb0d31fd2a3"
 dependencies = [
  "cipher 0.5.1",
  "cpubits",
- "cpufeatures 0.3.0",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -206,7 +206,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -217,7 +217,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -784,6 +784,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.0",
+ "digest 0.11.2",
  "serde",
 ]
 
@@ -923,6 +924,17 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
+name = "chacha20"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "rand_core 0.10.0",
+]
 
 [[package]]
 name = "ciborium"
@@ -1745,6 +1757,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "cryprot-core"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab0508d6ca98ca41580944a67edbb950f337008a0f6177f3f73cfc885385552f"
+dependencies = [
+ "aes 0.9.0-rc.4",
+ "blake3",
+ "bytemuck",
+ "cpufeatures 0.3.0",
+ "hybrid-array",
+ "libc",
+ "rand 0.10.1",
+ "rand_core 0.10.0",
+ "rand_core 0.6.4",
+ "rustc_version 0.4.1",
+ "seq-macro",
+ "serde",
+ "subtle",
+ "thiserror 2.0.18",
+ "tracing",
+ "wide",
+]
+
+[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,7 +2158,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2507,6 +2543,16 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "allocator-api2",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -2576,6 +2622,7 @@ version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3944cf8cf766b40e2a1a333ee5e9b563f854d5fa49d6a8ca2764e97c6eddb214"
 dependencies = [
+ "bytemuck",
  "subtle",
  "typenum",
  "zeroize",
@@ -2670,7 +2717,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3072,6 +3119,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpz-circuits"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "mpz-circuits-core",
+ "mpz-circuits-data",
+]
+
+[[package]]
+name = "mpz-circuits-core"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "bincode",
+ "itybity",
+ "once_cell",
+ "rand 0.9.3",
+ "regex",
+ "serde",
+ "serde_arrays",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mpz-circuits-data"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "bincode",
+ "mpz-circuits-core",
+ "once_cell",
+]
+
+[[package]]
 name = "mpz-cointoss"
 version = "0.1.0-alpha.5"
 source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
@@ -3119,7 +3200,7 @@ name = "mpz-core"
 version = "0.1.0-alpha.5"
 source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
 dependencies = [
- "aes 0.9.0",
+ "aes 0.9.0-rc.4",
  "bcs",
  "bitvec",
  "blake3",
@@ -3135,6 +3216,77 @@ dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mpz-garble"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "async-trait",
+ "derive_builder",
+ "futures",
+ "hashbrown 0.14.5",
+ "mpz-circuits",
+ "mpz-common",
+ "mpz-core",
+ "mpz-garble-core",
+ "mpz-memory-core",
+ "mpz-ot",
+ "mpz-vm-core",
+ "opaque-debug",
+ "rand 0.9.3",
+ "rangeset",
+ "serde",
+ "serio",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "mpz-garble-core"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "aes 0.9.0-rc.4",
+ "bitvec",
+ "blake3",
+ "cfg-if",
+ "cipher 0.5.1",
+ "derive_builder",
+ "itybity",
+ "mpz-circuits",
+ "mpz-common",
+ "mpz-core",
+ "mpz-memory-core",
+ "mpz-ot-core",
+ "mpz-vm-core",
+ "once_cell",
+ "opaque-debug",
+ "rand 0.9.3",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
+ "rangeset",
+ "serde",
+ "serde_arrays",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "mpz-memory-core"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "blake3",
+ "futures",
+ "itybity",
+ "mpz-core",
+ "rand 0.9.3",
+ "rangeset",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -3168,7 +3320,7 @@ name = "mpz-ot-core"
 version = "0.1.0-alpha.5"
 source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
 dependencies = [
- "aes 0.9.0",
+ "aes 0.9.0-rc.4",
  "blake3",
  "bytemuck",
  "cfg-if",
@@ -3191,6 +3343,19 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "zerocopy",
+]
+
+[[package]]
+name = "mpz-vm-core"
+version = "0.1.0-alpha.5"
+source = "git+https://github.com/privacy-scaling-explorations/mpz#aaa008bb897ee7868bc2e5e6ac30eec73e044002"
+dependencies = [
+ "async-trait",
+ "futures",
+ "mpz-circuits",
+ "mpz-common",
+ "mpz-memory-core",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3313,7 +3478,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3588,11 +3753,11 @@ dependencies = [
  "ark-poly",
  "ark-serialize 0.5.0",
  "ark-std 0.5.0",
+ "cryprot-core",
  "eyre",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
- "sha3",
 ]
 
 [[package]]
@@ -3602,12 +3767,12 @@ dependencies = [
  "ark-bn254",
  "ark-ff 0.5.0",
  "ark-poly",
+ "ark-serialize 0.5.0",
  "ark-std 0.5.0",
  "eyre",
  "pcg-core",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
- "sha3",
 ]
 
 [[package]]
@@ -4012,6 +4177,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+dependencies = [
+ "chacha20",
+ "getrandom 0.4.2",
+ "rand_core 0.10.0",
+]
+
+[[package]]
 name = "rand_chacha"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4062,6 +4238,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rangeset"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9eb3f4f9d5c7dc4c0460fc098e6f97d0f28d46da60e163cfbc058a08467d5fd"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4312,7 +4497,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4371,7 +4556,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4397,6 +4582,15 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "safe_arch"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -4511,6 +4705,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "seq-macro"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4525,6 +4725,15 @@ name = "serde-big-array"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_arrays"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38636132857f68ec3d5f3eb121166d2af33cb55174c4d5ff645db6165cbef0fd"
 dependencies = [
  "serde",
 ]
@@ -4677,7 +4886,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4722,17 +4931,31 @@ dependencies = [
 name = "spdz-pcg"
 version = "0.1.0"
 dependencies = [
+ "aes 0.8.4",
  "ark-bn254",
  "ark-ff 0.5.0",
  "ark-poly",
+ "ark-serialize 0.5.0",
  "ark-std 0.5.0",
  "eyre",
+ "futures",
  "mpc-net",
+ "mpz-circuits",
+ "mpz-common",
+ "mpz-core",
+ "mpz-garble",
+ "mpz-memory-core",
+ "mpz-ot",
+ "mpz-ot-core",
+ "mpz-vm-core",
+ "once_cell",
  "pcg-core",
  "pcg-protocols",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "sha3",
  "spdz-core",
+ "tokio",
 ]
 
 [[package]]
@@ -4991,7 +5214,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5662,6 +5885,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wide"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9479f84a757f819cfab37295955906479181395de83add28f74975fde083141"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+ "serde_core",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5683,7 +5917,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
