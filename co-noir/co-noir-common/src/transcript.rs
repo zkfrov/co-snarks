@@ -233,6 +233,15 @@ where
         self.add_to_hash_buffer(label, &H::convert_scalarfield_into::<P>(&element));
     }
 
+    pub fn add_point_to_hash_buffer<P: HonkCurve<F>>(
+        &mut self,
+        label: String,
+        element: P::Affine,
+    ) {
+        let elements = H::convert_point::<P>(&element);
+        self.add_to_hash_buffer(label, &elements);
+    }
+
     pub fn send_point_to_verifier<P: HonkCurve<F>>(&mut self, label: String, element: P::Affine) {
         let elements = H::convert_point::<P>(&element);
         self.send_to_verifier(label, &elements);

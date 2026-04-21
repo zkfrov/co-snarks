@@ -43,11 +43,11 @@ pub fn ipa_prove<C, H>(
     assert!(poly_length.is_power_of_two(), "polynomial length must be power of 2");
     let log_n = poly_length.ilog2() as usize;
 
-    // Step 1: Add claim to hash buffer
+    // Step 1: Add claim to hash buffer (NOT to proof bytes — verifier knows these)
     let commitment = ck.commit(&opening_claim.polynomial);
-    transcript.send_point_to_verifier::<C>("IPA:commitment".to_string(), commitment);
-    transcript.send_fr_to_verifier::<C>("IPA:challenge".to_string(), opening_claim.challenge);
-    transcript.send_fr_to_verifier::<C>("IPA:evaluation".to_string(), opening_claim.evaluation);
+    transcript.add_point_to_hash_buffer::<C>("IPA:commitment".to_string(), commitment);
+    transcript.add_fr_to_hash_buffer::<C>("IPA:challenge".to_string(), opening_claim.challenge);
+    transcript.add_fr_to_hash_buffer::<C>("IPA:evaluation".to_string(), opening_claim.evaluation);
 
     // Step 2: Get generator challenge and compute auxiliary generator U
     let generator_challenge = transcript.get_challenge::<C>("IPA:generator_challenge".to_string());

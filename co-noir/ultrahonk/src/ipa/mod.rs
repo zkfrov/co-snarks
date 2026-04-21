@@ -120,6 +120,12 @@ mod tests {
             &ck, commitment, challenge, evaluation, &mut verifier_transcript,
         );
 
+        if !verified {
+            // Debug: manually check the inner product
+            eprintln!("DEBUG: commitment = {:?}", commitment);
+            eprintln!("DEBUG: evaluation = {:?}", evaluation);
+            eprintln!("DEBUG: challenge = {:?}", challenge);
+        }
         assert!(verified, "IPA proof should verify");
     }
 

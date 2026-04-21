@@ -23,6 +23,30 @@ use co_noir_common::{
 
 use super::IpaVerificationKey;
 
+/// Construct the s-vector from round challenges.
+/// s = (1, u₀⁻¹, u₁⁻¹, u₀⁻¹u₁⁻¹, ..., Πu_i⁻¹)
+///
+/// s[j] = Π_{i where bit i of j is 1} u_i⁻¹
+fn construct_s_vector<F: PrimeField>(u_challenges: &[F]) -> Vec<F> {
+    let k = u_challenges.len();
+    let n = 1 << k;
+    let mut s = vec![F::one(); n];
+
+    let u_inv: Vec<F> = u_challenges.iter()
+        .map(|u| u.inverse().expect("challenge nonzero"))
+        .collect();
+
+    for i in 0..k {
+        let stride = 1 << (k - 1 - i);
+        for j in 0..n {
+            if j & stride != 0 {
+                s[j] *= u_inv[i];
+            }
+        }
+    }
+    s
+}
+
 /// Verify an IPA opening proof.
 ///
 /// Returns true if the proof is valid.
@@ -41,10 +65,11 @@ where
     assert!(poly_length.is_power_of_two());
     let log_n = poly_length.ilog2() as usize;
 
-    // Read claim from transcript (must match what prover sent)
-    let _comm = transcript.receive_point_from_prover::<C>("IPA:commitment".to_string());
-    let _chal = transcript.receive_fr_from_prover::<C>("IPA:challenge".to_string());
-    let _eval = transcript.receive_fr_from_prover::<C>("IPA:evaluation".to_string());
+    // Add claim to hash buffer (same as prover — these are NOT in the proof bytes,
+    // they just affect Fiat-Shamir. The verifier already knows commitment/challenge/evaluation.)
+    transcript.add_point_to_hash_buffer::<C>("IPA:commitment".to_string(), commitment);
+    transcript.add_fr_to_hash_buffer::<C>("IPA:challenge".to_string(), challenge);
+    transcript.add_fr_to_hash_buffer::<C>("IPA:evaluation".to_string(), evaluation);
 
     // Get generator challenge and compute U
     let generator_challenge = transcript.get_challenge::<C>("IPA:generator_challenge".to_string());
@@ -102,20 +127,31 @@ where
     }
     let b_0 = b_vec[0];
 
-    // Verify: C + v·U + Σ (u_i²·L_i + u_i⁻²·R_i) == a₀·G₀ + a₀·b₀·U
-    //
-    // Left side: accumulate commitment with round contributions
-    let mut lhs: C = commitment.into();
-    lhs += aux_generator * evaluation;
+    // Step 5: C₀ = C' + Σ u_j⁻¹·L_j + Σ u_j·R_j
+    // where C' = C + v·U
+    let c_prime: C = C::from(commitment) + aux_generator * evaluation;
+
+    let mut c_zero = c_prime;
     for i in 0..log_n {
-        let u_sq = u_challenges[i] * u_challenges[i];
-        let u_inv_sq = u_sq.inverse().expect("nonzero");
-        lhs += C::from(l_commitments[i]) * u_sq;
-        lhs += C::from(r_commitments[i]) * u_inv_sq;
+        let u_inv = u_challenges[i].inverse().expect("challenge nonzero");
+        c_zero += C::from(l_commitments[i]) * u_inv;
+        c_zero += C::from(r_commitments[i]) * u_challenges[i];
     }
 
-    // Right side: a₀·G₀ + a₀·b₀·U
-    let rhs: C = C::from(g_0) * a_0 + aux_generator * (a_0 * b_0);
+    // Step 8: Compute G_s from s-vector and CRS
+    // s = (1, u₀⁻¹, u₁⁻¹, u₀⁻¹u₁⁻¹, ..., Π u_i⁻¹)
+    let s_vec = construct_s_vector(&u_challenges);
+    let g_s: C = C::msm_unchecked(&vk.generators[..poly_length], &s_vec);
 
-    lhs == rhs
+    // Verify G_0 from prover matches our computed G_s
+    // (bb asserts this; we check it)
+    if g_s.into_affine() != g_0 {
+        return false;
+    }
+
+    // Step 10: C_right = a₀·G_s + a₀·b₀·U
+    let rhs: C = g_s * a_0 + aux_generator * (a_0 * b_0);
+
+    // Step 11: Check C₀ == C_right
+    c_zero == rhs
 }
