@@ -185,21 +185,21 @@ impl HypernovaFoldingProver {
         let (instance_acc, mut transcript) =
             Self::instance_to_accumulator::<C, H>(proving_key, has_zk, verifying_key)?;
 
-        // Step 2: Run batching sumcheck
-        // The batching sumcheck reduces:
-        //   P_acc(r_acc) = v_acc AND P_inst(r_inst) = v_inst
-        // to a single claim at a new point u.
+        // Step 2: Run batching sumcheck on BOTH non-shifted and shifted
         let alpha = transcript.get_challenge::<C>("BatchingSumcheck:alpha".to_string());
 
-        let batching_output = super::batching_sumcheck::batching_sumcheck(
+        let batching_output = super::batching_sumcheck::batching_sumcheck::<C, H>(
             accumulator.non_shifted_polynomial.as_ref(),
+            accumulator.shifted_polynomial.as_ref(),
             instance_acc.non_shifted_polynomial.as_ref(),
+            instance_acc.shifted_polynomial.as_ref(),
             &accumulator.challenge,
             &instance_acc.challenge,
             alpha,
+            &mut transcript,
         );
 
-        // Step 3: Combine accumulators
+        // Step 3: Combine accumulators with γ from transcript
         let gamma = transcript.get_challenge::<C>("BatchingSumcheck:gamma".to_string());
 
         let new_accumulator = combine_accumulators(
@@ -207,8 +207,8 @@ impl HypernovaFoldingProver {
             &instance_acc,
             batching_output.new_challenge,
             gamma,
-            (batching_output.acc_eval_at_u, accumulator.shifted_evaluation), // TODO: shifted eval at u
-            (batching_output.inst_eval_at_u, instance_acc.shifted_evaluation),
+            (batching_output.acc_ns_eval_at_u, batching_output.acc_s_eval_at_u),
+            (batching_output.inst_ns_eval_at_u, batching_output.inst_s_eval_at_u),
         );
 
         Ok(new_accumulator)

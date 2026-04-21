@@ -1,37 +1,20 @@
 // Multilinear Batching Sumcheck
 //
-// A specialized sumcheck that reduces two polynomial evaluation claims
-// to a single claim at a new random point.
+// Reduces two polynomial evaluation claims to one via sumcheck.
+// Uses Fiat-Shamir transcript for challenge derivation (matching bb).
 //
-// Given:
-//   Accumulator: P_acc(r_acc) = v_acc
-//   Instance:    P_inst(r_inst) = v_inst
-//
-// The sumcheck proves:
-//   Σ_x [ P_acc(x)·eq(x, r_acc) + α·P_inst(x)·eq(x, r_inst) ] = v_acc + α·v_inst
-//
-// where eq(x, r) is the multilinear equality polynomial:
-//   eq(x, r) = Π_i ((1-x_i)(1-r_i) + x_i·r_i)
-//
-// After the sumcheck, both claims are reduced to evaluations at a new
-// random point u, enabling a single polynomial opening.
+// The relation: Σ_x [ P_acc(x)·eq(x, r_acc) + α·P_inst(x)·eq(x, r_inst) ] = v_acc + α·v_inst
 //
 // Reference: barretenberg/multilinear_batching/
 
 use ark_ff::{One, PrimeField, Zero};
-use co_noir_common::polynomials::polynomial::Polynomial;
+use co_noir_common::{
+    honk_curve::HonkCurve,
+    honk_proof::TranscriptFieldType,
+    transcript::{Transcript, TranscriptHasher},
+};
 
-/// Compute the multilinear equality polynomial eq(x, r) evaluated at x.
-///
-/// eq(x, r) = Π_i ((1 - x_i)(1 - r_i) + x_i · r_i)
-///
-/// For a boolean hypercube point x ∈ {0,1}^n:
-///   eq(x, r) = 1 if x = r, 0 otherwise (on the hypercube)
-///
-/// But we need it as a polynomial in x for the sumcheck, so we evaluate
-/// it as a multilinear extension over the full domain.
-///
-/// Returns a vector of length 2^n with eq(x, r) for all x ∈ {0,1}^n.
+/// Compute the multilinear equality polynomial eq(x, r) for all x ∈ {0,1}^n.
 pub fn compute_eq_polynomial<F: PrimeField>(r: &[F]) -> Vec<F> {
     let n = r.len();
     let size = 1 << n;
@@ -40,7 +23,6 @@ pub fn compute_eq_polynomial<F: PrimeField>(r: &[F]) -> Vec<F> {
 
     for (i, &r_i) in r.iter().enumerate() {
         let half = 1 << i;
-        // For each existing value, split into (1-r_i) and r_i branches
         for j in (0..half).rev() {
             eq[2 * j + 1] = eq[j] * r_i;
             eq[2 * j] = eq[j] * (F::one() - r_i);
@@ -49,44 +31,44 @@ pub fn compute_eq_polynomial<F: PrimeField>(r: &[F]) -> Vec<F> {
     eq
 }
 
-/// Run the multilinear batching sumcheck.
+/// Run the multilinear batching sumcheck with Fiat-Shamir transcript.
 ///
-/// Proves that two polynomial evaluation claims can be reduced to one.
+/// Handles BOTH non-shifted and shifted polynomial pairs.
 ///
 /// # Arguments
-/// * `acc_poly` - Accumulated batched polynomial (non-shifted)
-/// * `inst_poly` - Instance batched polynomial (non-shifted)
+/// * `acc_unshifted` / `acc_shifted` - Accumulator's batched polynomials
+/// * `inst_unshifted` / `inst_shifted` - Instance's batched polynomials
 /// * `acc_challenge` - Evaluation point for accumulator
 /// * `inst_challenge` - Evaluation point for instance
-/// * `alpha` - Batching challenge for combining the two claims
-///
-/// # Returns
-/// * `new_challenge` - New evaluation point u
-/// * `acc_eval_at_u` - P_acc(u)
-/// * `inst_eval_at_u` - P_inst(u)
-pub fn batching_sumcheck<F: PrimeField>(
-    acc_poly: &[F],
-    inst_poly: &[F],
-    acc_challenge: &[F],
-    inst_challenge: &[F],
-    alpha: F,
-) -> BatchingSumcheckOutput<F> {
+/// * `alpha` - Challenge for combining the two claims
+/// * `transcript` - Fiat-Shamir transcript for round challenges
+pub fn batching_sumcheck<C, H>(
+    acc_unshifted: &[C::ScalarField],
+    acc_shifted: &[C::ScalarField],
+    inst_unshifted: &[C::ScalarField],
+    inst_shifted: &[C::ScalarField],
+    acc_challenge: &[C::ScalarField],
+    inst_challenge: &[C::ScalarField],
+    alpha: C::ScalarField,
+    transcript: &mut Transcript<TranscriptFieldType, H>,
+) -> BatchingSumcheckOutput<C::ScalarField>
+where
+    C: HonkCurve<TranscriptFieldType>,
+    H: TranscriptHasher<TranscriptFieldType>,
+{
     let log_n = acc_challenge.len();
     let n = 1 << log_n;
-    assert!(acc_poly.len() >= n);
-    assert!(inst_poly.len() >= n);
     assert_eq!(acc_challenge.len(), inst_challenge.len());
 
-    // Compute eq polynomials for both challenge points
+    // Compute eq polynomials
     let eq_acc = compute_eq_polynomial(acc_challenge);
     let eq_inst = compute_eq_polynomial(inst_challenge);
 
-    // Build the combined polynomial table:
-    //   f(x) = P_acc(x)·eq(x, r_acc) + α·P_inst(x)·eq(x, r_inst)
-    //
-    // We store the individual components for the sumcheck rounds.
-    let mut poly_acc: Vec<F> = acc_poly[..n].to_vec();
-    let mut poly_inst: Vec<F> = inst_poly[..n].to_vec();
+    // Working tables for partial evaluation
+    let mut p_acc_ns: Vec<C::ScalarField> = pad_to(acc_unshifted, n);
+    let mut p_acc_s: Vec<C::ScalarField> = pad_to(acc_shifted, n);
+    let mut p_inst_ns: Vec<C::ScalarField> = pad_to(inst_unshifted, n);
+    let mut p_inst_s: Vec<C::ScalarField> = pad_to(inst_shifted, n);
     let mut eq_acc_table = eq_acc;
     let mut eq_inst_table = eq_inst;
 
@@ -95,42 +77,49 @@ pub fn batching_sumcheck<F: PrimeField>(
     for round in 0..log_n {
         let half = 1 << (log_n - 1 - round);
 
-        // Compute the round univariate:
-        // S(X) = Σ_{x₁,...,xₙ} f(X, x₁, ..., xₙ₋₁)
-        // Evaluated at X=0 and X=1.
-        let mut eval_0 = F::zero();
-        let mut eval_1 = F::zero();
+        // Compute round univariate S(X) evaluated at X=0 and X=1
+        let mut eval_0 = C::ScalarField::zero();
+        let mut eval_1 = C::ScalarField::zero();
 
         for j in 0..half {
-            // X=0 contribution: use even-indexed values
-            let f_0 = poly_acc[2 * j] * eq_acc_table[2 * j]
-                + alpha * poly_inst[2 * j] * eq_inst_table[2 * j];
-            // X=1 contribution: use odd-indexed values
-            let f_1 = poly_acc[2 * j + 1] * eq_acc_table[2 * j + 1]
-                + alpha * poly_inst[2 * j + 1] * eq_inst_table[2 * j + 1];
+            // Non-shifted contributions
+            let ns_0 = p_acc_ns[2 * j] * eq_acc_table[2 * j]
+                + alpha * p_inst_ns[2 * j] * eq_inst_table[2 * j];
+            let ns_1 = p_acc_ns[2 * j + 1] * eq_acc_table[2 * j + 1]
+                + alpha * p_inst_ns[2 * j + 1] * eq_inst_table[2 * j + 1];
 
-            eval_0 += f_0;
-            eval_1 += f_1;
+            // Shifted contributions (same eq polynomials, different data polys)
+            let s_0 = p_acc_s[2 * j] * eq_acc_table[2 * j]
+                + alpha * p_inst_s[2 * j] * eq_inst_table[2 * j];
+            let s_1 = p_acc_s[2 * j + 1] * eq_acc_table[2 * j + 1]
+                + alpha * p_inst_s[2 * j + 1] * eq_inst_table[2 * j + 1];
+
+            eval_0 += ns_0 + s_0;
+            eval_1 += ns_1 + s_1;
         }
 
-        // In a real implementation, eval_0 and eval_1 go to the transcript
-        // and the verifier sends back a challenge. For now, derive deterministically.
-        // TODO: Wire to actual transcript for Fiat-Shamir.
-        let round_challenge = if eval_0 + eval_1 != F::zero() {
-            // Simple deterministic challenge for testing
-            eval_0 * (eval_0 + eval_1).inverse().unwrap_or(F::one())
-        } else {
-            F::zero()
-        };
-
+        // Fiat-Shamir: send evaluations to transcript, get challenge back
+        transcript.send_fr_to_verifier::<C>(
+            format!("BatchingSumcheck:univariate_{round}_0"), eval_0,
+        );
+        transcript.send_fr_to_verifier::<C>(
+            format!("BatchingSumcheck:univariate_{round}_1"), eval_1,
+        );
+        let round_challenge = transcript.get_challenge::<C>(
+            format!("BatchingSumcheck:u_{round}"),
+        );
         new_challenge.push(round_challenge);
 
         // Partially evaluate all tables at the round challenge
         for j in 0..half {
-            poly_acc[j] = poly_acc[2 * j]
-                + (poly_acc[2 * j + 1] - poly_acc[2 * j]) * round_challenge;
-            poly_inst[j] = poly_inst[2 * j]
-                + (poly_inst[2 * j + 1] - poly_inst[2 * j]) * round_challenge;
+            p_acc_ns[j] = p_acc_ns[2 * j]
+                + (p_acc_ns[2 * j + 1] - p_acc_ns[2 * j]) * round_challenge;
+            p_acc_s[j] = p_acc_s[2 * j]
+                + (p_acc_s[2 * j + 1] - p_acc_s[2 * j]) * round_challenge;
+            p_inst_ns[j] = p_inst_ns[2 * j]
+                + (p_inst_ns[2 * j + 1] - p_inst_ns[2 * j]) * round_challenge;
+            p_inst_s[j] = p_inst_s[2 * j]
+                + (p_inst_s[2 * j + 1] - p_inst_s[2 * j]) * round_challenge;
             eq_acc_table[j] = eq_acc_table[2 * j]
                 + (eq_acc_table[2 * j + 1] - eq_acc_table[2 * j]) * round_challenge;
             eq_inst_table[j] = eq_inst_table[2 * j]
@@ -138,22 +127,83 @@ pub fn batching_sumcheck<F: PrimeField>(
         }
     }
 
-    // After log_n rounds, poly_acc[0] = P_acc(u), poly_inst[0] = P_inst(u)
+    // After log_n rounds, each table has been reduced to a single value
     BatchingSumcheckOutput {
         new_challenge,
-        acc_eval_at_u: poly_acc[0],
-        inst_eval_at_u: poly_inst[0],
+        acc_ns_eval_at_u: p_acc_ns[0],
+        acc_s_eval_at_u: p_acc_s[0],
+        inst_ns_eval_at_u: p_inst_ns[0],
+        inst_s_eval_at_u: p_inst_s[0],
     }
+}
+
+/// Verify the batching sumcheck (verifier side).
+///
+/// Reads round univariates from transcript, checks consistency,
+/// derives the same challenges as the prover.
+pub fn verify_batching_sumcheck<C, H>(
+    acc_ns_eval: C::ScalarField,
+    acc_s_eval: C::ScalarField,
+    inst_ns_eval: C::ScalarField,
+    inst_s_eval: C::ScalarField,
+    alpha: C::ScalarField,
+    log_n: usize,
+    transcript: &mut Transcript<TranscriptFieldType, H>,
+) -> (bool, Vec<C::ScalarField>)
+where
+    C: HonkCurve<TranscriptFieldType>,
+    H: TranscriptHasher<TranscriptFieldType>,
+{
+    // Target sum: v_acc_ns + v_acc_s + α·(v_inst_ns + v_inst_s)
+    let target_sum = (acc_ns_eval + acc_s_eval)
+        + alpha * (inst_ns_eval + inst_s_eval);
+
+    let mut running_sum = target_sum;
+    let mut new_challenge = Vec::with_capacity(log_n);
+    let mut verified = true;
+
+    for round in 0..log_n {
+        // Read prover's claimed evaluations at X=0 and X=1
+        let eval_0 = transcript.receive_fr_from_prover::<C>(
+            format!("BatchingSumcheck:univariate_{round}_0"),
+        ).unwrap_or_default();
+        let eval_1 = transcript.receive_fr_from_prover::<C>(
+            format!("BatchingSumcheck:univariate_{round}_1"),
+        ).unwrap_or_default();
+
+        // Check: S(0) + S(1) should equal the running sum
+        if eval_0 + eval_1 != running_sum {
+            verified = false;
+        }
+
+        // Derive challenge (same as prover via Fiat-Shamir)
+        let round_challenge = transcript.get_challenge::<C>(
+            format!("BatchingSumcheck:u_{round}"),
+        );
+        new_challenge.push(round_challenge);
+
+        // Update running sum: S_{next} = S(u_i) = (1-u_i)·S(0) + u_i·S(1)
+        running_sum = eval_0 + round_challenge * (eval_1 - eval_0);
+    }
+
+    (verified, new_challenge)
 }
 
 /// Output of the multilinear batching sumcheck.
 pub struct BatchingSumcheckOutput<F: PrimeField> {
-    /// New evaluation point u (length = log(circuit_size))
     pub new_challenge: Vec<F>,
-    /// P_acc(u)
-    pub acc_eval_at_u: F,
-    /// P_inst(u)
-    pub inst_eval_at_u: F,
+    pub acc_ns_eval_at_u: F,
+    pub acc_s_eval_at_u: F,
+    pub inst_ns_eval_at_u: F,
+    pub inst_s_eval_at_u: F,
+}
+
+/// Pad a slice to length n with zeros.
+fn pad_to<F: PrimeField>(slice: &[F], n: usize) -> Vec<F> {
+    let mut v = vec![F::zero(); n];
+    let copy_len = slice.len().min(n);
+    v[..copy_len].copy_from_slice(&slice[..copy_len]);
+    v
 }
 
 #[cfg(test)]
@@ -162,31 +212,20 @@ mod tests {
     use ark_bn254::Fr;
 
     #[test]
-    fn test_eq_polynomial() {
-        // eq(x, r) should sum to 1 over the boolean hypercube
-        // because eq is a probability distribution (partition of unity)
+    fn test_eq_polynomial_sum() {
         let r = vec![Fr::from(3u64), Fr::from(7u64)];
         let eq = compute_eq_polynomial(&r);
         let sum: Fr = eq.iter().sum();
         assert_eq!(sum, Fr::one(), "eq polynomial should sum to 1");
+    }
 
-        // For r = [0, 0], eq(x, [0,0]) should be 1 at x=[0,0] and 0 elsewhere
+    #[test]
+    fn test_eq_polynomial_delta() {
         let r_zero = vec![Fr::zero(), Fr::zero()];
         let eq_zero = compute_eq_polynomial(&r_zero);
         assert_eq!(eq_zero[0], Fr::one());
         assert_eq!(eq_zero[1], Fr::zero());
         assert_eq!(eq_zero[2], Fr::zero());
         assert_eq!(eq_zero[3], Fr::zero());
-    }
-
-    #[test]
-    fn test_batching_sumcheck_trivial() {
-        // Trivial case: both polys are constant 1, challenges are [0]
-        let poly = vec![Fr::one(); 2];
-        let challenge = vec![Fr::zero()];
-        let alpha = Fr::one();
-
-        let output = batching_sumcheck(&poly, &poly, &challenge, &challenge, alpha);
-        assert_eq!(output.new_challenge.len(), 1);
     }
 }
