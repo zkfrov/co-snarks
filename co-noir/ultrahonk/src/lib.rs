@@ -2,6 +2,7 @@
 
 pub(crate) mod decider;
 pub mod hypernova;
+pub mod ipa;
 pub mod multilinear_batching;
 pub(crate) mod oink;
 pub mod prelude;
