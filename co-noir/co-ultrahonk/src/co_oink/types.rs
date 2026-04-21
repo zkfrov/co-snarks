@@ -1,5 +1,5 @@
 use ark_ec::CurveGroup;
-use ark_ff::PrimeField;
+use ark_ff::{PrimeField, Zero};
 use co_noir_common::polynomials::polynomial::Polynomial;
 use co_noir_common::polynomials::shared_polynomial::SharedPolynomial;
 
@@ -36,7 +36,7 @@ impl<F: PrimeField> Default for Challenges<F> {
             beta_sqr: Default::default(),
             beta_cube: Default::default(),
             gamma: Default::default(),
-            alphas: Default::default(),
+            alphas: [F::zero(); NUM_ALPHAS],
         }
     }
 }

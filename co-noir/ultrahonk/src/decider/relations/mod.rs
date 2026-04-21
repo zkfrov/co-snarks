@@ -11,18 +11,25 @@ pub(crate) mod poseidon2_internal_relation;
 pub(crate) mod ultra_arithmetic_relation;
 
 use super::types::{ClaimedEvaluations, ProverUnivariates, RelationParameters};
-use crate::decider::relations::non_native_field_relation::NonNativeFieldRelationAcc;
 use crate::{
     decider::relations::{
         memory_relation::{MemoryRelation, MemoryRelationAcc, MemoryRelationEvals},
-        non_native_field_relation::{NonNativeFieldRelation, NonNativeFieldRelationEvals},
+        non_native_field_relation::{
+            NonNativeFieldRelation, NonNativeFieldRelationAcc, NonNativeFieldRelationEvals,
+        },
     },
     prelude::Univariate,
 };
 use ark_ff::PrimeField;
+use databus_lookup_relation::{
+    DatabusLookupRelation, DatabusLookupRelationAcc, DatabusLookupRelationEvals,
+};
 use delta_range_constraint_relation::{
     DeltaRangeConstraintRelation, DeltaRangeConstraintRelationAcc,
     DeltaRangeConstraintRelationEvals,
+};
+use ecc_op_queue_relation::{
+    EccOpQueueRelation, EccOpQueueRelationAcc, EccOpQueueRelationEvals,
 };
 use elliptic_relation::{EllipticRelation, EllipticRelationAcc, EllipticRelationEvals};
 use logderiv_lookup_relation::{
@@ -69,15 +76,20 @@ pub(crate) trait Relation<F: PrimeField> {
     );
 }
 
-pub(crate) const NUM_SUBRELATIONS: usize = UltraArithmeticRelation::NUM_RELATIONS
-    + UltraPermutationRelation::NUM_RELATIONS
-    + DeltaRangeConstraintRelation::NUM_RELATIONS
-    + EllipticRelation::NUM_RELATIONS
-    + MemoryRelation::NUM_RELATIONS
-    + NonNativeFieldRelation::NUM_RELATIONS
-    + LogDerivLookupRelation::NUM_RELATIONS
-    + Poseidon2ExternalRelation::NUM_RELATIONS
-    + Poseidon2InternalRelation::NUM_RELATIONS;
+// Ultra: 2+2+3+4+2+6+1+4+4 = 28 subrelations
+// Mega adds: 8 (ecc_op) + 9 (databus) = 17
+// Total: 45
+pub(crate) const NUM_SUBRELATIONS: usize = UltraArithmeticRelation::NUM_RELATIONS   // 2
+    + UltraPermutationRelation::NUM_RELATIONS  // 2
+    + DeltaRangeConstraintRelation::NUM_RELATIONS // 4
+    + EllipticRelation::NUM_RELATIONS          // 2
+    + MemoryRelation::NUM_RELATIONS            // 6
+    + NonNativeFieldRelation::NUM_RELATIONS    // 1
+    + LogDerivLookupRelation::NUM_RELATIONS    // 3
+    + Poseidon2ExternalRelation::NUM_RELATIONS // 4
+    + Poseidon2InternalRelation::NUM_RELATIONS // 4
+    + EccOpQueueRelation::NUM_RELATIONS        // 8 (Mega)
+    + DatabusLookupRelation::NUM_RELATIONS;    // 9 (Mega)
 
 #[derive(Default)]
 pub(crate) struct AllRelationAcc<F: PrimeField> {
@@ -90,6 +102,9 @@ pub(crate) struct AllRelationAcc<F: PrimeField> {
     pub(crate) r_nnf: NonNativeFieldRelationAcc<F>,
     pub(crate) r_pos_ext: Poseidon2ExternalRelationAcc<F>,
     pub(crate) r_pos_int: Poseidon2InternalRelationAcc<F>,
+    // Mega-only relations
+    pub(crate) r_ecc_op: EccOpQueueRelationAcc<F>,
+    pub(crate) r_databus: DatabusLookupRelationAcc<F>,
 }
 
 #[derive(Default)]
@@ -103,7 +118,25 @@ pub(crate) struct AllRelationEvaluations<F: PrimeField> {
     pub(crate) r_nnf: NonNativeFieldRelationEvals<F>,
     pub(crate) r_pos_ext: Poseidon2ExternalRelationEvals<F>,
     pub(crate) r_pos_int: Poseidon2InternalRelationEvals<F>,
+    // Mega-only relations
+    pub(crate) r_ecc_op: EccOpQueueRelationEvals<F>,
+    pub(crate) r_databus: DatabusLookupRelationEvals<F>,
 }
+
+// Alpha index layout (elements[0] is the second alpha, first_scalar is alpha^0):
+// Ultra:
+//   arith:     [first_scalar, 0]         = 2
+//   perm:      [1..3]                    = 2
+//   lookup:    [3..6]                    = 3
+//   delta:     [6..10]                   = 4
+//   elliptic:  [10..12]                  = 2
+//   memory:    [12..18]                  = 6
+//   nnf:       [18..19]                  = 1
+//   pos_ext:   [19..23]                  = 4
+//   pos_int:   [23..27]                  = 4
+// Mega additions:
+//   ecc_op:    [27..35]                  = 8
+//   databus:   [35..44]                  = 9
 
 impl<F: PrimeField> AllRelationEvaluations<F> {
     pub(crate) fn scale_and_batch_elements(&self, first_scalar: F, elements: &[F]) -> F {
@@ -126,7 +159,12 @@ impl<F: PrimeField> AllRelationEvaluations<F> {
         self.r_pos_ext
             .scale_and_batch_elements(&elements[19..23], &mut output);
         self.r_pos_int
-            .scale_and_batch_elements(&elements[23..], &mut output);
+            .scale_and_batch_elements(&elements[23..27], &mut output);
+        // Mega
+        self.r_ecc_op
+            .scale_and_batch_elements(&elements[27..35], &mut output);
+        self.r_databus
+            .scale_and_batch_elements(&elements[35..44], &mut output);
 
         output
     }
@@ -143,7 +181,10 @@ impl<F: PrimeField> AllRelationAcc<F> {
         self.r_memory.scale(&elements[12..18]);
         self.r_nnf.scale(&elements[18..19]);
         self.r_pos_ext.scale(&elements[19..23]);
-        self.r_pos_int.scale(&elements[23..]);
+        self.r_pos_int.scale(&elements[23..27]);
+        // Mega
+        self.r_ecc_op.scale(&elements[27..35]);
+        self.r_databus.scale(&elements[35..44]);
     }
 
     pub(crate) fn extend_and_batch_univariates<const SIZE: usize>(
@@ -153,49 +194,38 @@ impl<F: PrimeField> AllRelationAcc<F> {
         partial_evaluation_result: &F,
     ) {
         self.r_arith.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_perm.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_lookup.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_delta.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_elliptic.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_memory.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_nnf.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_pos_ext.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
         );
         self.r_pos_int.extend_and_batch_univariates(
-            result,
-            extended_random_poly,
-            partial_evaluation_result,
+            result, extended_random_poly, partial_evaluation_result,
+        );
+        // Mega
+        self.r_ecc_op.extend_and_batch_univariates(
+            result, extended_random_poly, partial_evaluation_result,
+        );
+        self.r_databus.extend_and_batch_univariates(
+            result, extended_random_poly, partial_evaluation_result,
         );
     }
 }
