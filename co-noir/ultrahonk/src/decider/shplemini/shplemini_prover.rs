@@ -269,7 +269,7 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
     // /**
     //  * @brief Computes partially evaluated batched polynomials A₀₊(X) = F(X) + G(X)/r and A₀₋(X) = F(X) - G(X)/r
     //  *
-    fn compute_partially_evaluated_batch_polynomials(
+    pub(crate) fn compute_partially_evaluated_batch_polynomials(
         batched_f: Polynomial<P::ScalarField>,
         mut batched_g: Polynomial<P::ScalarField>,
         r_challenge: P::ScalarField,
@@ -310,7 +310,7 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
     //  * @param r_challenge
     //  * @return std::vector<typename GeminiProver_<Curve>::Claim> d+1 univariate opening claims
     //  */
-    fn construct_univariate_opening_claims(
+    pub(crate) fn construct_univariate_opening_claims(
         log_n: usize,
         a_0_pos: Polynomial<P::ScalarField>,
         a_0_neg: Polynomial<P::ScalarField>,
@@ -371,7 +371,7 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
      * @param opening_claims
      * @return std::vector<Fr>
      */
-    fn compute_gemini_fold_pos_evaluations(
+    pub(crate) fn compute_gemini_fold_pos_evaluations(
         opening_claims: &[ShpleminiOpeningClaim<P::ScalarField>],
     ) -> Vec<P::ScalarField> {
         tracing::trace!("Compute gemini fold pos evaluations");
