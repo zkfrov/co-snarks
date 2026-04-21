@@ -1,33 +1,24 @@
 // ECC Op Queue Relation for MegaFlavor
 //
 // Constrains ecc_op_wire polynomials to equal shifted wires on the ECC op domain,
-// and zero elsewhere.
-//
-// The relation is:
-//   α_base * (Σ_{i=0}^3 α^i * (w_i_shift - w_{op,i}) * χ_{ecc_op}
-//           + Σ_{i=0}^3 α^{i+4} * w_{op,i} * (1 - χ_{ecc_op}))
-//
-// Subrelations 0-3: on ECC op domain, op wires must match shifted standard wires
-// Subrelations 4-7: outside ECC op domain, op wires must be zero
+// and zero elsewhere. 8 subrelations, all degree 3.
 //
 // Reference: barretenberg/relations/ecc_op_queue_relation.hpp
 
 use crate::decider::types::{ClaimedEvaluations, RelationParameters};
 use crate::decider::{types::ProverUnivariates, univariate::Univariate};
 use ark_ff::{PrimeField, Zero};
-use co_noir_common::honk_curve::HonkCurve;
-use co_noir_common::honk_proof::TranscriptFieldType;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EccOpQueueRelationAcc<F: PrimeField> {
-    pub(crate) r0: Univariate<F, 3>, // w_1_shift - op_wire_1 on ecc_op domain
-    pub(crate) r1: Univariate<F, 3>, // w_2_shift - op_wire_2 on ecc_op domain
-    pub(crate) r2: Univariate<F, 3>, // w_3_shift - op_wire_3 on ecc_op domain
-    pub(crate) r3: Univariate<F, 3>, // w_4_shift - op_wire_4 on ecc_op domain
-    pub(crate) r4: Univariate<F, 3>, // op_wire_1 vanishes outside ecc_op domain
-    pub(crate) r5: Univariate<F, 3>, // op_wire_2 vanishes outside ecc_op domain
-    pub(crate) r6: Univariate<F, 3>, // op_wire_3 vanishes outside ecc_op domain
-    pub(crate) r7: Univariate<F, 3>, // op_wire_4 vanishes outside ecc_op domain
+    pub(crate) r0: Univariate<F, 3>,
+    pub(crate) r1: Univariate<F, 3>,
+    pub(crate) r2: Univariate<F, 3>,
+    pub(crate) r3: Univariate<F, 3>,
+    pub(crate) r4: Univariate<F, 3>,
+    pub(crate) r5: Univariate<F, 3>,
+    pub(crate) r6: Univariate<F, 3>,
+    pub(crate) r7: Univariate<F, 3>,
 }
 
 impl<F: PrimeField> EccOpQueueRelationAcc<F> {
@@ -62,14 +53,8 @@ impl<F: PrimeField> EccOpQueueRelationAcc<F> {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EccOpQueueRelationEvals<F: PrimeField> {
-    pub(crate) r0: F,
-    pub(crate) r1: F,
-    pub(crate) r2: F,
-    pub(crate) r3: F,
-    pub(crate) r4: F,
-    pub(crate) r5: F,
-    pub(crate) r6: F,
-    pub(crate) r7: F,
+    pub(crate) r0: F, pub(crate) r1: F, pub(crate) r2: F, pub(crate) r3: F,
+    pub(crate) r4: F, pub(crate) r5: F, pub(crate) r6: F, pub(crate) r7: F,
 }
 
 impl<F: PrimeField> EccOpQueueRelationEvals<F> {
@@ -90,7 +75,6 @@ pub(crate) struct EccOpQueueRelation {}
 
 impl EccOpQueueRelation {
     pub(crate) const NUM_RELATIONS: usize = 8;
-    pub(crate) const SKIPPABLE: bool = true;
 }
 
 impl<F: PrimeField> super::Relation<F> for EccOpQueueRelation {
@@ -100,8 +84,7 @@ impl<F: PrimeField> super::Relation<F> for EccOpQueueRelation {
     const SKIPPABLE: bool = true;
 
     fn skip(input: &ProverUnivariates<F>) -> bool {
-        // Can skip if lagrange_ecc_op is identically zero
-        input.lagrange_ecc_op.is_zero()
+        input.precomputed.lagrange_ecc_op().is_zero()
     }
 
     fn accumulate(
@@ -110,32 +93,40 @@ impl<F: PrimeField> super::Relation<F> for EccOpQueueRelation {
         _relation_parameters: &RelationParameters<F>,
         scaling_factor: &F,
     ) {
-        let w_1_shift = &input.w_l_shift;
-        let w_2_shift = &input.w_r_shift;
-        let w_3_shift = &input.w_o_shift;
-        let w_4_shift = &input.w_4_shift;
-        let op_wire_1 = &input.ecc_op_wire_1;
-        let op_wire_2 = &input.ecc_op_wire_2;
-        let op_wire_3 = &input.ecc_op_wire_3;
-        let op_wire_4 = &input.ecc_op_wire_4;
-        let lagrange_ecc_op = &input.lagrange_ecc_op;
+        let w_1_shift = input.shifted_witness.w_l();
+        let w_2_shift = input.shifted_witness.w_r();
+        let w_3_shift = input.shifted_witness.w_o();
+        let w_4_shift = input.shifted_witness.w_4();
+        let op_wire_1 = input.witness.ecc_op_wire_1();
+        let op_wire_2 = input.witness.ecc_op_wire_2();
+        let op_wire_3 = input.witness.ecc_op_wire_3();
+        let op_wire_4 = input.witness.ecc_op_wire_4();
+        let lagrange_ecc_op = input.precomputed.lagrange_ecc_op();
 
         // lagrange_by_scaling = lagrange_ecc_op * scaling_factor
-        let lagrange_by_scaling = lagrange_ecc_op * scaling_factor;
-        // complement = scaling_factor - lagrange_by_scaling = (1 - lagrange_ecc_op) * scaling_factor
-        let complement_by_scaling = &(-&lagrange_by_scaling) + scaling_factor;
+        let lagrange_by_scaling = lagrange_ecc_op.to_owned() * scaling_factor;
+        // complement = scaling_factor - lagrange_by_scaling
+        let complement_by_scaling = -(lagrange_by_scaling.to_owned()) + scaling_factor;
 
-        // Subrelations 0-3: (op_wire_i - w_i_shift) * lagrange_ecc_op * scaling_factor
-        univariate_accumulator.r0 += &(&(op_wire_1 - w_1_shift) * &lagrange_by_scaling);
-        univariate_accumulator.r1 += &(&(op_wire_2 - w_2_shift) * &lagrange_by_scaling);
-        univariate_accumulator.r2 += &(&(op_wire_3 - w_3_shift) * &lagrange_by_scaling);
-        univariate_accumulator.r3 += &(&(op_wire_4 - w_4_shift) * &lagrange_by_scaling);
+        // Subrelations 0-3: (op_wire_i - w_i_shift) * lagrange * scaling
+        let tmp = (op_wire_1.to_owned() - w_1_shift) * &lagrange_by_scaling;
+        for i in 0..univariate_accumulator.r0.evaluations.len() { univariate_accumulator.r0.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = (op_wire_2.to_owned() - w_2_shift) * &lagrange_by_scaling;
+        for i in 0..univariate_accumulator.r1.evaluations.len() { univariate_accumulator.r1.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = (op_wire_3.to_owned() - w_3_shift) * &lagrange_by_scaling;
+        for i in 0..univariate_accumulator.r2.evaluations.len() { univariate_accumulator.r2.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = (op_wire_4.to_owned() - w_4_shift) * &lagrange_by_scaling;
+        for i in 0..univariate_accumulator.r3.evaluations.len() { univariate_accumulator.r3.evaluations[i] += tmp.evaluations[i]; }
 
-        // Subrelations 4-7: op_wire_i * (1 - lagrange_ecc_op) * scaling_factor
-        univariate_accumulator.r4 += &(op_wire_1 * &complement_by_scaling);
-        univariate_accumulator.r5 += &(op_wire_2 * &complement_by_scaling);
-        univariate_accumulator.r6 += &(op_wire_3 * &complement_by_scaling);
-        univariate_accumulator.r7 += &(op_wire_4 * &complement_by_scaling);
+        // Subrelations 4-7: op_wire_i * complement * scaling
+        let tmp = op_wire_1.to_owned() * &complement_by_scaling;
+        for i in 0..univariate_accumulator.r4.evaluations.len() { univariate_accumulator.r4.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = op_wire_2.to_owned() * &complement_by_scaling;
+        for i in 0..univariate_accumulator.r5.evaluations.len() { univariate_accumulator.r5.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = op_wire_3.to_owned() * &complement_by_scaling;
+        for i in 0..univariate_accumulator.r6.evaluations.len() { univariate_accumulator.r6.evaluations[i] += tmp.evaluations[i]; }
+        let tmp = op_wire_4.to_owned() * &complement_by_scaling;
+        for i in 0..univariate_accumulator.r7.evaluations.len() { univariate_accumulator.r7.evaluations[i] += tmp.evaluations[i]; }
     }
 
     fn verify_accumulate(
@@ -144,15 +135,15 @@ impl<F: PrimeField> super::Relation<F> for EccOpQueueRelation {
         _relation_parameters: &RelationParameters<F>,
         scaling_factor: &F,
     ) {
-        let w_1_shift = input.w_l_shift;
-        let w_2_shift = input.w_r_shift;
-        let w_3_shift = input.w_o_shift;
-        let w_4_shift = input.w_4_shift;
-        let op_wire_1 = input.ecc_op_wire_1;
-        let op_wire_2 = input.ecc_op_wire_2;
-        let op_wire_3 = input.ecc_op_wire_3;
-        let op_wire_4 = input.ecc_op_wire_4;
-        let lagrange_ecc_op = input.lagrange_ecc_op;
+        let w_1_shift = *input.shifted_witness.w_l();
+        let w_2_shift = *input.shifted_witness.w_r();
+        let w_3_shift = *input.shifted_witness.w_o();
+        let w_4_shift = *input.shifted_witness.w_4();
+        let op_wire_1 = *input.witness.ecc_op_wire_1();
+        let op_wire_2 = *input.witness.ecc_op_wire_2();
+        let op_wire_3 = *input.witness.ecc_op_wire_3();
+        let op_wire_4 = *input.witness.ecc_op_wire_4();
+        let lagrange_ecc_op = *input.precomputed.lagrange_ecc_op();
 
         let lagrange_by_scaling = lagrange_ecc_op * scaling_factor;
         let complement_by_scaling = *scaling_factor - lagrange_by_scaling;

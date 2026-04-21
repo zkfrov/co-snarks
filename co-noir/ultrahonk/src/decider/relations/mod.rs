@@ -1,4 +1,6 @@
+pub(crate) mod databus_lookup_relation;
 pub(crate) mod delta_range_constraint_relation;
+pub(crate) mod ecc_op_queue_relation;
 pub(crate) mod elliptic_relation;
 pub(crate) mod logderiv_lookup_relation;
 pub(crate) mod memory_relation;
