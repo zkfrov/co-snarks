@@ -1,6 +1,7 @@
 #![warn(clippy::iter_over_hash_type)]
 
 pub(crate) mod decider;
+pub mod hypernova;
 pub mod multilinear_batching;
 pub(crate) mod oink;
 pub mod prelude;
