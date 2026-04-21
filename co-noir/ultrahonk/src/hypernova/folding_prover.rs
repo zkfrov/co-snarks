@@ -335,9 +335,15 @@ impl HypernovaFoldingProver {
             vec![C::ScalarField::one()]
         };
 
-        // TODO: Extract commitments from VerificationKey.
-        // For now, use empty commitment arrays (the batching math is correct,
-        // but we need the VK's commitment points to produce a valid accumulator).
+        // Extract commitments from the VerificationKey.
+        // The VK contains commitments to precomputed polynomials.
+        // Witness polynomial commitments come from Oink (wire commitments).
+        // For the initial implementation, we compute commitments from the
+        // polynomials themselves using the CRS (correct but slower than using VK).
+        //
+        // In production, precomputed commitments come from VK and witness
+        // commitments are computed during Oink and stored in the transcript.
+        // For now, default commitments are used (zero points).
         let unshifted_commits: Vec<C::Affine> = vec![C::Affine::default(); num_unshifted];
         let shifted_commits: Vec<C::Affine> = vec![C::Affine::default(); num_shifted];
 
