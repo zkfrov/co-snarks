@@ -213,13 +213,98 @@ impl HypernovaFoldingProver {
         // The batching uses get_batching_challenges from the transcript to get
         // per-polynomial ρ values, then calls sumcheck_output_to_accumulator.
 
-        // Placeholder: this will be replaced with the actual sumcheck output
-        // once we refactor the Decider to expose the intermediate state.
-        let _ = (memory, virtual_log_n);
-        todo!(
-            "Connect to Decider::sumcheck_prove() and extract evaluations + \
-             polynomials for batching. The batching logic is implemented in \
-             sumcheck_output_to_accumulator() above."
-        )
+        // Phase 2: Sumcheck — evaluate all relations at random point r
+        let decider = crate::decider::decider_prover::Decider::<C, H>::new(
+            memory, has_zk,
+        );
+        let sumcheck_output = decider.sumcheck_prove(
+            &mut transcript, circuit_size, virtual_log_n,
+        );
+
+        let claimed_evaluations = sumcheck_output.claimed_evaluations
+            .expect("sumcheck_prove now always captures evaluations");
+
+        // Phase 3: Batch all polynomials/commitments/evaluations into accumulator
+        //
+        // The polynomials and evaluations are in AllEntities which has:
+        //   .witness (unshifted witness polys)
+        //   .precomputed (unshifted precomputed polys)
+        //   .shifted_witness (shifted witness polys)
+        //
+        // For batching we need separate unshifted and shifted arrays.
+        // Unshifted = precomputed + witness, Shifted = shifted_witness.
+
+        // Collect unshifted polynomials (Vec<F>) and evaluations (F)
+        // Unshifted = precomputed + witness entities
+        // polys are AllEntities<Vec<F>>, evals are AllEntities<F>
+        let unshifted_polys: Vec<&[C::ScalarField]> = decider.memory.polys.precomputed.iter()
+            .map(|p: &Vec<C::ScalarField>| p.as_slice())
+            .chain(decider.memory.polys.witness.iter().map(|p: &Vec<C::ScalarField>| p.as_slice()))
+            .collect();
+        let unshifted_evals: Vec<C::ScalarField> = claimed_evaluations.precomputed.iter()
+            .copied()
+            .chain(claimed_evaluations.witness.iter().copied())
+            .collect();
+
+        // Collect shifted polynomials and evaluations
+        let shifted_polys: Vec<&[C::ScalarField]> = decider.memory.polys.shifted_witness.iter()
+            .map(|p: &Vec<C::ScalarField>| p.as_slice())
+            .collect();
+        let shifted_evals: Vec<C::ScalarField> = claimed_evaluations.shifted_witness.iter()
+            .copied()
+            .collect();
+
+        let num_unshifted = unshifted_polys.len();
+        let num_shifted = shifted_polys.len();
+
+        // Generate batching challenges ρ from transcript
+        // First coefficient is implicit 1, rest are random from transcript
+        let unshifted_rhos: Vec<C::ScalarField> = if num_unshifted > 1 {
+            let rhos = transcript.get_powers_of_challenge::<C>(
+                "HyperNova:rho_unshifted".to_string(),
+                num_unshifted - 1,
+            );
+            let mut full = Vec::with_capacity(num_unshifted);
+            full.push(C::ScalarField::one());
+            full.extend(rhos);
+            full
+        } else {
+            vec![C::ScalarField::one()]
+        };
+
+        let shifted_rhos: Vec<C::ScalarField> = if num_shifted > 1 {
+            let rhos = transcript.get_powers_of_challenge::<C>(
+                "HyperNova:rho_shifted".to_string(),
+                num_shifted - 1,
+            );
+            let mut full = Vec::with_capacity(num_shifted);
+            full.push(C::ScalarField::one());
+            full.extend(rhos);
+            full
+        } else {
+            vec![C::ScalarField::one()]
+        };
+
+        // TODO: Extract commitments from VerificationKey.
+        // For now, use empty commitment arrays (the batching math is correct,
+        // but we need the VK's commitment points to produce a valid accumulator).
+        let unshifted_commits: Vec<C::Affine> = vec![C::Affine::default(); num_unshifted];
+        let shifted_commits: Vec<C::Affine> = vec![C::Affine::default(); num_shifted];
+
+        let dyadic_size = (circuit_size as usize).next_power_of_two();
+        let accumulator = sumcheck_output_to_accumulator::<C>(
+            sumcheck_output.challenges,
+            &unshifted_polys,
+            &shifted_polys,
+            &unshifted_evals,
+            &shifted_evals,
+            &unshifted_commits,
+            &shifted_commits,
+            &unshifted_rhos,
+            &shifted_rhos,
+            dyadic_size,
+        );
+
+        Ok((accumulator, transcript))
     }
 }
