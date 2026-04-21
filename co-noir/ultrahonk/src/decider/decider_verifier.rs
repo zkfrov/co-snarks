@@ -20,7 +20,7 @@ pub(crate) struct DeciderVerifier<
     P: HonkCurve<TranscriptFieldType>,
     H: TranscriptHasher<TranscriptFieldType>,
 > {
-    pub(super) memory: VerifierMemory<P>,
+    pub(crate) memory: VerifierMemory<P>,
     phantom_data: PhantomData<(P, H)>,
 }
 
@@ -32,6 +32,12 @@ impl<C: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
             memory,
             phantom_data: PhantomData,
         }
+    }
+
+    /// Consume self and return the verifier memory.
+    /// Used by HyperNova to extract commitments/evaluations after sumcheck.
+    pub(crate) fn into_memory(self) -> VerifierMemory<C> {
+        self.memory
     }
 
     pub(crate) fn reduce_verify_shplemini(

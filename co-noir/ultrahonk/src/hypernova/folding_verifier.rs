@@ -1,25 +1,14 @@
 // HyperNova Folding Verifier
 //
-// Verifies folding proofs and maintains the verifier's accumulator.
-// Mirrors the folding prover but works with commitments only (no polynomials).
-//
-// Algorithm:
-//   instance_to_accumulator(proof):
-//     1. Run OinkVerifier → extract commitments + challenges
-//     2. Run SumcheckVerifier → verify relation check, get evaluation point r
-//     3. Batch commitments and evaluations with ρ challenges
-//     → Verifier accumulator (commitments + evaluations at point r)
-//
-//   verify_folding_proof(accumulator, proof):
-//     1. Verify new instance (OinkVerifier + SumcheckVerifier)
-//     2. Verify batching sumcheck (combining old + new accumulators)
-//     → New verifier accumulator
+// Runs OinkVerifier + SumcheckVerifier (actual verification, not placeholder)
+// then batches commitments into a verifier accumulator.
 //
 // Reference: barretenberg/hypernova/hypernova_verifier.hpp
 
 use ark_ec::{CurveGroup, VariableBaseMSM, pairing::Pairing};
 use ark_ff::{One, PrimeField, Zero};
 use co_noir_common::{
+    constants::BATCHED_RELATION_PARTIAL_LENGTH,
     honk_curve::HonkCurve,
     honk_proof::TranscriptFieldType,
     keys::verification_key::VerifyingKey,
@@ -30,7 +19,10 @@ use noir_types::HonkProof;
 
 use crate::{
     CONST_PROOF_SIZE_LOG_N,
-    decider::types::VerifierMemory,
+    decider::{
+        decider_verifier::DeciderVerifier,
+        types::VerifierMemory,
+    },
     multilinear_batching::MultilinearBatchingVerifierClaim,
     oink::oink_verifier::OinkVerifier,
     ultra_prover::UltraHonk,
@@ -44,15 +36,17 @@ pub struct HypernovaFoldingVerifier;
 impl HypernovaFoldingVerifier {
     /// Convert a circuit instance proof to an initial verifier accumulator.
     ///
-    /// Runs: OinkVerifier → SumcheckVerifier → batch commitments → VerifierClaim
+    /// Runs the ACTUAL sumcheck verification (not a placeholder), then batches
+    /// commitments and evaluations into a verifier accumulator.
     ///
-    /// Returns (sumcheck_verified, verifier_accumulator).
+    /// Returns (sumcheck_verified, verifier_accumulator, transcript) — transcript
+    /// is returned for chaining into verify_folding_proof.
     pub fn instance_to_accumulator<C, H, P>(
         honk_proof: HonkProof<H::DataType>,
         public_inputs: &[H::DataType],
         verifying_key: &VerifyingKey<P>,
         has_zk: ZeroKnowledge,
-    ) -> HonkVerifyResult<(bool, MultilinearBatchingVerifierClaim<C>)>
+    ) -> HonkVerifyResult<(bool, MultilinearBatchingVerifierClaim<C>, Transcript<TranscriptFieldType, H>)>
     where
         C: HonkCurve<TranscriptFieldType>,
         H: TranscriptHasher<TranscriptFieldType>,
@@ -61,7 +55,7 @@ impl HypernovaFoldingVerifier {
         let honk_proof = honk_proof.insert_public_inputs(public_inputs.to_vec());
         let mut transcript = Transcript::<TranscriptFieldType, H>::new_verifier(honk_proof);
 
-        // Phase 1: Oink verification — check wire commitments, grand products
+        // Phase 1: Oink verification
         let oink_verifier = OinkVerifier::<C, H>::new("".to_string(), has_zk);
         let oink_result = oink_verifier.verify(verifying_key, &mut transcript)?;
 
@@ -74,22 +68,28 @@ impl HypernovaFoldingVerifier {
         };
         memory.gate_challenges = UltraHonk::<C, H>::generate_gate_challenges(&mut transcript, virtual_log_n);
 
-        // Phase 2: Sumcheck verification
-        // The verifier runs the sumcheck to check the relation holds at the random point.
-        //
-        // After sumcheck, we have:
-        //   - challenge point r (from sumcheck rounds)
-        //   - claimed evaluations (from the prover's transcript)
-        //   - commitments (from the VK + oink)
-        //
-        // The DeciderVerifier handles this, but for HyperNova we need to stop
-        // after sumcheck (before PCS) and batch the commitments into an accumulator.
+        // Phase 2: ACTUAL sumcheck verification
+        // Build a DeciderVerifier and run sumcheck_verify to get:
+        //   - multivariate_challenge (the evaluation point r)
+        //   - verified (did the sumcheck pass?)
+        //   - claimed_evaluations populated in memory
+        let padding_indicator_array = vec![C::ScalarField::one(); virtual_log_n];
+        let mut decider_verifier = DeciderVerifier::<C, H>::new(memory);
+        let sumcheck_output = decider_verifier.sumcheck_verify::<BATCHED_RELATION_PARTIAL_LENGTH>(
+            &mut transcript,
+            has_zk,
+            &padding_indicator_array,
+        )?;
 
-        // Extract commitments from the verifier memory
-        // The verifier_commitments contain all committed polynomial commitments.
+        let sumcheck_verified = sumcheck_output.verified;
+        let multivariate_challenge = sumcheck_output.multivariate_challenge;
+
+        // Extract memory back from DeciderVerifier for commitments/evaluations
+        let memory = decider_verifier.into_memory();
+
+        // Phase 3: Batch commitments and evaluations
         let verifier_commitments = &memory.verifier_commitments;
 
-        // Collect unshifted and shifted commitments
         let unshifted_commits: Vec<C::Affine> = verifier_commitments.precomputed.iter()
             .chain(verifier_commitments.witness.iter())
             .copied()
@@ -101,7 +101,6 @@ impl HypernovaFoldingVerifier {
         let num_unshifted = unshifted_commits.len();
         let num_shifted = shifted_commits.len();
 
-        // Collect evaluations from the claimed_evaluations in memory
         let unshifted_evals: Vec<C::ScalarField> = memory.claimed_evaluations.precomputed.iter()
             .chain(memory.claimed_evaluations.witness.iter())
             .copied()
@@ -110,7 +109,6 @@ impl HypernovaFoldingVerifier {
             .copied()
             .collect();
 
-        // Generate batching challenges ρ from transcript (same as prover)
         let unshifted_rhos = make_batching_challenges::<C, H>(
             &mut transcript, "HyperNova:rho_unshifted", num_unshifted,
         );
@@ -118,7 +116,6 @@ impl HypernovaFoldingVerifier {
             &mut transcript, "HyperNova:rho_shifted", num_shifted,
         );
 
-        // Batch commitments: [P_batched] = Σ ρᵢ·[Pᵢ]
         let batched_unshifted_commit = folding_prover::batch_commitments::<C>(
             &unshifted_commits, &unshifted_rhos,
         );
@@ -126,7 +123,6 @@ impl HypernovaFoldingVerifier {
             &shifted_commits, &shifted_rhos,
         );
 
-        // Batch evaluations: v_batched = Σ ρᵢ·vᵢ
         let batched_unshifted_eval = folding_prover::batch_evaluations(
             &unshifted_evals, &unshifted_rhos,
         );
@@ -134,38 +130,23 @@ impl HypernovaFoldingVerifier {
             &shifted_evals, &shifted_rhos,
         );
 
-        // The challenge point comes from the sumcheck.
-        // In the full flow, the sumcheck verifier produces the multivariate_challenge.
-        // For now, we use the gate_challenges as the challenge point since the
-        // actual sumcheck verifier is tightly coupled to DeciderVerifier.
-        // In production, this would be the output of SumcheckVerifier::sumcheck_verify.
-        //
-        // The gate_challenges are derived from the same transcript and have the
-        // correct length (virtual_log_n), but they're technically different values.
-        // To fully match bb: run SumcheckVerifier here and extract its challenge output.
-        let challenge = memory.gate_challenges.clone();
-
+        // Use the ACTUAL multivariate_challenge from sumcheck (not gate_challenges)
         let verifier_claim = MultilinearBatchingVerifierClaim {
-            challenge,
+            challenge: multivariate_challenge,
             non_shifted_evaluation: batched_unshifted_eval,
             shifted_evaluation: batched_shifted_eval,
             non_shifted_commitment: batched_unshifted_commit,
             shifted_commitment: batched_shifted_commit,
         };
 
-        // The instance sumcheck was verified by OinkVerifier + transcript consistency.
-        // For full verification: run SumcheckVerifier::sumcheck_verify here.
-        // The Fiat-Shamir transcript ensures the verifier derives the same challenges.
-        let sumcheck_verified = true; // Verified implicitly through transcript consistency
-
-        Ok((sumcheck_verified, verifier_claim))
+        Ok((sumcheck_verified, verifier_claim, transcript))
     }
 
     /// Verify a folding proof (combines old accumulator with new instance).
     ///
-    /// 1. Verifies the new instance via instance_to_accumulator
+    /// 1. Verifies the new instance via instance_to_accumulator (actual sumcheck)
     /// 2. Verifies the batching sumcheck
-    /// 3. Produces a new combined verifier accumulator
+    /// 3. Combines verifier claims with γ from transcript
     ///
     /// Returns (instance_verified, batching_verified, new_accumulator).
     pub fn verify_folding_proof<C, H, P>(
@@ -180,36 +161,31 @@ impl HypernovaFoldingVerifier {
         H: TranscriptHasher<TranscriptFieldType>,
         P: Pairing<G1 = C, G1Affine = C::Affine>,
     {
-        // Step 1: Verify new instance
-        let (instance_verified, instance_claim) =
+        // Step 1: Verify new instance (runs actual sumcheck verification)
+        let (instance_verified, instance_claim, mut transcript) =
             Self::instance_to_accumulator::<C, H, P>(
                 honk_proof, public_inputs, verifying_key, has_zk,
             )?;
 
         // Step 2: Verify batching sumcheck
-        // Read the prover's batching sumcheck rounds from transcript and verify
-        let alpha = C::ScalarField::one(); // Will be derived from transcript in full wiring
-
-        // For the batching sumcheck, we need the accumulated evaluations
-        // The verifier already has these from the accumulator.
+        // The prover sent BatchingSumcheck round data to the transcript.
+        // The verifier reads it and checks consistency.
+        let alpha = transcript.get_challenge::<C>("BatchingSumcheck:alpha".to_string());
         let log_n = accumulator.challenge.len();
 
-        // Create a verifier transcript that reads the batching sumcheck data
-        // In the full flow, this is the SAME transcript continued from instance verification.
-        // For now, we verify using the batching sumcheck verifier.
-        // The prover sent BatchingSumcheck:univariate_i_0/1 and we derive the same challenges.
-        //
-        // Note: The transcript is not passed through here yet (it's consumed by
-        // instance_to_accumulator). To fully match bb, the transcript must be
-        // threaded through both steps. For now, we trust the batching sumcheck.
-        let batching_verified = instance_verified;
+        let (batching_verified, _batching_challenge) =
+            super::batching_sumcheck::verify_batching_sumcheck::<C, H>(
+                accumulator.non_shifted_evaluation,
+                accumulator.shifted_evaluation,
+                instance_claim.non_shifted_evaluation,
+                instance_claim.shifted_evaluation,
+                alpha,
+                log_n,
+                &mut transcript,
+            );
 
         // Step 3: Combine verifier claims with γ from transcript
-        // In bb, γ = transcript.get_challenge("BatchingSumcheck:gamma")
-        // derived after the batching sumcheck rounds complete.
-        // Since the transcript isn't threaded through here yet, we derive
-        // a deterministic γ. To fully match bb: thread the transcript.
-        let gamma = C::ScalarField::one(); // Matches bb when batching sumcheck transcript is threaded
+        let gamma = transcript.get_challenge::<C>("BatchingSumcheck:gamma".to_string());
 
         let combined_ns_commit: C::Affine = (
             C::from(instance_claim.non_shifted_commitment) +
@@ -221,7 +197,7 @@ impl HypernovaFoldingVerifier {
         ).into();
 
         let new_claim = MultilinearBatchingVerifierClaim {
-            challenge: instance_claim.challenge, // Updated to sumcheck output point
+            challenge: instance_claim.challenge,
             non_shifted_evaluation: instance_claim.non_shifted_evaluation
                 + gamma * accumulator.non_shifted_evaluation,
             shifted_evaluation: instance_claim.shifted_evaluation
