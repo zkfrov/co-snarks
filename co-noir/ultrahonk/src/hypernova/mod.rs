@@ -12,6 +12,7 @@
 //
 // Reference: barretenberg/hypernova/
 
+pub mod batching_sumcheck;
 pub mod folding_prover;
 pub mod folding_verifier;
 pub mod decider_prover;

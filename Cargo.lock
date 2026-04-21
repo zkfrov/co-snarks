@@ -5041,6 +5041,7 @@ dependencies = [
 name = "ultrahonk"
 version = "0.6.0"
 dependencies = [
+ "ark-bn254",
  "ark-ec",
  "ark-ff 0.5.0",
  "ark-poly",

@@ -164,6 +164,56 @@ pub fn combine_accumulators<P: CurveGroup>(
 pub struct HypernovaFoldingProver;
 
 impl HypernovaFoldingProver {
+    /// Fold a new circuit instance into an existing accumulator.
+    ///
+    /// 1. Converts the new instance to an accumulator via instance_to_accumulator
+    /// 2. Runs the batching sumcheck to reduce both claims to one
+    /// 3. Combines the accumulators with γ challenge
+    ///
+    /// Returns (fold_proof_bytes, new_combined_accumulator).
+    pub fn fold<C, H>(
+        accumulator: MultilinearBatchingProverClaim<C>,
+        proving_key: PlainProvingKey<C>,
+        has_zk: ZeroKnowledge,
+        verifying_key: &VerifyingKeyBarretenberg<C>,
+    ) -> HonkProofResult<MultilinearBatchingProverClaim<C>>
+    where
+        C: HonkCurve<TranscriptFieldType>,
+        H: TranscriptHasher<TranscriptFieldType>,
+    {
+        // Step 1: Convert new instance to accumulator
+        let (instance_acc, mut transcript) =
+            Self::instance_to_accumulator::<C, H>(proving_key, has_zk, verifying_key)?;
+
+        // Step 2: Run batching sumcheck
+        // The batching sumcheck reduces:
+        //   P_acc(r_acc) = v_acc AND P_inst(r_inst) = v_inst
+        // to a single claim at a new point u.
+        let alpha = transcript.get_challenge::<C>("BatchingSumcheck:alpha".to_string());
+
+        let batching_output = super::batching_sumcheck::batching_sumcheck(
+            accumulator.non_shifted_polynomial.as_ref(),
+            instance_acc.non_shifted_polynomial.as_ref(),
+            &accumulator.challenge,
+            &instance_acc.challenge,
+            alpha,
+        );
+
+        // Step 3: Combine accumulators
+        let gamma = transcript.get_challenge::<C>("BatchingSumcheck:gamma".to_string());
+
+        let new_accumulator = combine_accumulators(
+            &accumulator,
+            &instance_acc,
+            batching_output.new_challenge,
+            gamma,
+            (batching_output.acc_eval_at_u, accumulator.shifted_evaluation), // TODO: shifted eval at u
+            (batching_output.inst_eval_at_u, instance_acc.shifted_evaluation),
+        );
+
+        Ok(new_accumulator)
+    }
+
     /// Convert a circuit instance to an initial accumulator.
     ///
     /// Runs: Oink → Sumcheck → batch polynomials/commitments → Accumulator
