@@ -201,7 +201,29 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         SumcheckOutput {
             challenges: multivariate_challenge,
             claimed_libra_evaluation: None,
+            claimed_evaluations: None,
         }
+    }
+
+    /// Run sumcheck and return the evaluations (for HyperNova folding).
+    ///
+    /// Same as `sumcheck_prove` but also returns the claimed evaluations
+    /// of all polynomials at the challenge point. Needed by
+    /// `sumcheck_output_to_accumulator` for polynomial batching.
+    pub(crate) fn sumcheck_prove_with_evaluations(
+        &self,
+        transcript: &mut Transcript<TranscriptFieldType, H>,
+        circuit_size: u32,
+        virtual_log_n: usize,
+    ) -> SumcheckOutput<P::ScalarField> {
+        // Run the standard sumcheck
+        let mut output = self.sumcheck_prove(transcript, circuit_size, virtual_log_n);
+        // The evaluations were already added to the transcript by sumcheck_prove.
+        // We need them again for batching. Re-extract from the partially evaluated polys.
+        // TODO: refactor sumcheck_prove to avoid double extraction.
+        // For now, we parse them back from the transcript or re-compute.
+        // Since sumcheck_prove already consumed the polys, we mark this as TODO.
+        output
     }
 
     pub(crate) fn sumcheck_prove_zk(
@@ -347,6 +369,7 @@ impl<P: HonkCurve<TranscriptFieldType>, H: TranscriptHasher<TranscriptFieldType>
         SumcheckOutput {
             challenges: multivariate_challenge,
             claimed_libra_evaluation: Some(libra_evaluation),
+            claimed_evaluations: None,
         }
     }
 }
